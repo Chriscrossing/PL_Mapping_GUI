@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject
 
+from PySide6.QtGui import QTransform
 
 import pyqtgraph as pg
 import numpy as np
@@ -213,7 +214,7 @@ Main GUI Class
 class ExperimentGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Experiment GUI")
+        self.setWindowTitle("Data Viewer")
 
         self.vars = Variables()  
 
@@ -238,11 +239,22 @@ class ExperimentGUI(QMainWindow):
 
         # Start image loader
         self.start_csv_image_loader()
+        
+        # Initialise list of spectra points
+        self.positions = []
+        self.colors = ['r', 'g', 'b', 'c', 'm', 'y', 'w']
+        self.color_index = 0
+        self.pens = []
 
     def init_controls(self):
         self.open_button = QPushButton("Open File")
         self.left_panel.addWidget(self.open_button)
+        
+        self.clear_button = QPushButton("Clear Points")
+        self.left_panel.addWidget(self.clear_button)
+        
         self.open_button.clicked.connect(self.open_file_browser)
+        self.clear_button.clicked.connect(self.clear_plots)
 
     def open_file_browser(self):
         """Callback function to open the filebrowser window"""
@@ -261,13 +273,69 @@ class ExperimentGUI(QMainWindow):
     # Callbacks for handling user interaction
     def updatePlot(self):
         #global img, roi, data, p2
-        selected = self.roi.getArrayRegion(self.data, self.img)
-        self.p2.plot(selected.mean(axis=0), clear=True)
+        #selected = self.roi.getArrayRegion(self.data, self.img)
+        #self.p2.plot(selected.mean(axis=0), clear=True)
+        pass
 
     def updateIsocurve(self):
         global isoLine, iso
         self.iso.setLevel(self.isoLine.value())
-
+        
+    # creating a mouse double click event
+    def mouseDblClick(self, event):
+        
+        
+        #Calculate coordinates that were double clicked"""
+        pos = event.pos()
+        i, j = pos.y(), pos.x()
+        i = int(np.clip(i, 0, self.data.shape[0] - 1))
+        j = int(np.clip(j, 0, self.data.shape[1] - 1))
+        val = self.data[i, j]
+        ppos = self.img.mapToParent(pos)
+        x, y = ppos.x(), ppos.y()
+        
+        
+        #create a new pen for the new point (pen is essentually a scatter point theme)"""
+        self.pens.append(pg.mkPen(width=5, color=self.colors[self.color_index % len(self.colors)]))
+        
+        #iterate the color index so a new color is chosen"""
+        self.color_index += 1
+        
+        #Add the scatter point to the figure"""
+        self.scatter_1.addPoints(x=[x],y=[y])
+        
+        #update the list of pens"""
+        self.scatter_1.setPen(self.pens)
+        
+        #maybe we need this idk
+        #self.positions.append((x,y))
+        # print the message
+        print("Mouse Double Click Event: " + "pos: (%0.1f, %0.1f)  pixel: (%d, %d)  value: %.3g" % (x, y, i, j, val))
+        
+        # grab the nearest datapoint, plot an arrow to it and plot the spectra in the new panel
+        coordinate_pick = np.array((y,x))
+        distances = np.linalg.norm(self.coordinates-coordinate_pick, axis=1)
+        min_index = np.argmin(distances)
+        closest_coord = self.coordinates[min_index]
+        
+        print(f"the closest point is {closest_coord}, at a distance of {distances[min_index]}")
+        
+        #Add the scatter point to the figure"""
+        self.scatter_2.addPoints(x=[closest_coord[1]],y=[closest_coord[0]])
+        
+        #update the list of pens"""
+        self.scatter_2.setPen(self.pens)
+        
+        
+        #add a line to the spectra plot
+        self.line_plt.plot(x=self.wavelengths,y=self.spect[min_index], clear=True)
+        
+    def clear_plots(self,event):
+        self.scatter_1.setData(x=[],y=[])
+        self.scatter_2.setData(x=[],y=[])
+        self.p2.clear()
+        self.pens = []
+        self.color_index = 0
 
     def imageHoverEvent(self,event):
         """Show the position, pixel, and value under the mouse cursor.
@@ -286,11 +354,12 @@ class ExperimentGUI(QMainWindow):
 
     def init_plot_area(self):
 
+        #cmap = pg.colormap.getFromMatplotlib('jet')
+        #self.img.setColorMap(cmap)
+
         # Set a custom color map
-        cmap = pg.colormap.getFromMatplotlib('jet')
-
+        
         self.map_widget = pg.GraphicsLayoutWidget()
-
         self.map_widget.setWindowTitle('Data Analysis')
 
 
@@ -299,16 +368,24 @@ class ExperimentGUI(QMainWindow):
 
         # Item for displaying image data
         self.img = pg.ImageItem()
-        self.img.setColorMap(cmap)
+
 
         self.p1.addItem(self.img)
 
+        # item for adding scatter points
+        self.scatter_1 = pg.ScatterPlotItem(symbol='o', size=5)
+        self.p1.addItem(self.scatter_1)
+        self.scatter_2 = pg.ScatterPlotItem(symbol='x', size=5)
+        self.p1.addItem(self.scatter_2)
+        self.scatter_1.setZValue(10)
+        self.scatter_2.setZValue(11)
+        
         # Custom ROI for selecting an image region
-        self.roi = pg.ROI([-8, 14], [6, 5])
-        self.roi.addScaleHandle([0.5, 1], [0.5, 0.5])
-        self.roi.addScaleHandle([0, 0.5], [0.5, 0.5])
-        self.p1.addItem(self.roi)
-        self.roi.setZValue(10)  # make sure ROI is drawn above image
+        #self.roi = pg.ROI([20, 10], [1, 1])
+        #self.roi.addScaleHandle([0.5, 1], [0.5, 0.5])
+        #self.roi.addScaleHandle([0, 0.5], [0.5, 0.5])
+        #self.p1.addItem(self.roi)
+        #self.roi.setZValue(10)  # make sure ROI is drawn above image
 
         # Isocurve drawing
         self.iso = pg.IsocurveItem(level=0.8, pen='g')
@@ -321,11 +398,11 @@ class ExperimentGUI(QMainWindow):
         self.map_widget.addItem(self.hist)
 
         # Draggable line for setting isocurve level
-        self.isoLine = pg.InfiniteLine(angle=0, movable=True, pen='g')
-        self.hist.vb.addItem(self.isoLine)
-        self.hist.vb.setMouseEnabled(y=False) # makes user interaction a little easier
-        self.isoLine.setValue(1260)
-        self.isoLine.setZValue(1000) # bring iso line above contrast controls
+        #self.isoLine = pg.InfiniteLine(angle=0, movable=True, pen='g')
+        #self.hist.vb.addItem(self.isoLine)
+        #self.hist.vb.setMouseEnabled(y=False) # makes user interaction a little easier
+        #self.isoLine.setValue(1300)
+        #self.isoLine.setZValue(1000) # bring iso line above contrast controls
         
         # Another plot area for displaying ROI data
         self.map_widget.nextRow()
@@ -333,31 +410,34 @@ class ExperimentGUI(QMainWindow):
         self.p2.setMaximumHeight(250)
         self.map_widget.resize(800,800)
         
+        self.line_plt = pg.PlotItem()
+        self.p2.addItem(self.line_plt)
+        
         
         # Generate image data
-        self.data = np.random.normal(size=(200, 100))
-        self.data[20:80, 20:80] += 2.
-        self.data = pg.gaussianFilter(self.data, (3, 3))
-        self.data += np.random.normal(size=(200, 100)) * 0.1
-        self.img.setImage(self.data)
-        self.hist.setLevels(self.data.min(), self.data.max())
+        #self.data = np.random.normal(size=(200, 100))
+        #self.data[20:80, 20:80] += 2.
+        #self.data = pg.gaussianFilter(self.data, (3, 3))
+        #self.data += np.random.normal(size=(200, 100)) * 0.1
+        #self.img.setImage(self.data)
+        #self.hist.setLevels(self.data.min(), self.data.max())
 
         # build isocurves from smoothed data
-        self.iso.setData(pg.gaussianFilter(self.data, (2, 2)))
+        #self.iso.setData(pg.gaussianFilter(self.data, (2, 2)))
 
         # set position and scale of image
-        tr = QtGui.QTransform()
-        self.img.setTransform(tr.scale(0.2, 0.2).translate(-50, 0))
+        #tr = QtGui.QTransform()
+        #self.img.setTransform(tr.scale(0.2, 0.2).translate(-50, 0))
 
-        # zoom to fit imageo
-        self.p1.autoRange()  
-
-        
 
         # Connect to callbacks
-        self.roi.sigRegionChanged.connect(self.updatePlot)
-        self.updatePlot()
-        self.isoLine.sigDragged.connect(self.updateIsocurve)
+        #self.roi.sigRegionChanged.connect(self.updatePlot)
+        #self.updatePlot()
+        #self.isoLine.sigDragged.connect(self.updateIsocurve)
+        
+        #self.map_widget.sigSceneMouseMoved
+                
+        self.img.mouseDoubleClickEvent = self.mouseDblClick
         # Monkey-patch the image to use our custom hover function. 
         # This is generally discouraged (you should subclass ImageItem instead),
         # but it works for a very simple use like this. 
@@ -370,8 +450,7 @@ class ExperimentGUI(QMainWindow):
         self.csv_worker.moveToThread(self.csv_thread)
         self.csv_thread.started.connect(self.csv_worker.run)
         
-        self.csv_worker.data_updated.connect(self.update_image_data)
-        #self.csv_worker.data_updated.connect(self.update_data)
+        self.csv_worker.data_updated.connect(self.update_data)
         
         self.csv_worker.finished.connect(self.csv_thread.quit)
 
@@ -382,42 +461,31 @@ class ExperimentGUI(QMainWindow):
         self.ypos = data_dict['y']
         self.wavelengths = data_dict['wavelengths']
         self.spect = data_dict['spectra']
-
-        #self.plot_widget.plot(
-        #    self.xpos,
-        #    self.ypos,
-        #    pen=None,
-        #    symbol='o',
-        #    symbolSize=1,
-        #    #symbolBrush=pg.mkColor((256, g, b, 150))
-        #    )
-
-
-    def update_image_data(self, data_dict):
+        self.xnew = data_dict['x_new']
+        self.ynew = data_dict['y_new']
         
-        self.data = np.flipud(data_dict['img'])
+        self.coordinates = []
+        for i in range(0,len(self.xpos)):
+            self.coordinates.append((self.xpos[i],self.ypos[i]))
+            
+        self.data = (data_dict['img']).T
 
         self.img.setImage(self.data)
         self.hist.setLevels(1000, 2000)
-        self.p1.autoRange()
-        #self.plot_widget.setImage(self.image_data)
+        
 
-
-
-    def update_image_coordinates(self,coordinates):
-        dx = coordinates[0]
-        dy = coordinates[1]
-        tx = coordinates[2]
-        ty = coordinates[3]
-
-        print(coordinates)
+        dx = self.xnew[1]-self.xnew[0]
+        dy = self.ynew[1]-self.ynew[0]
+        
         tr = QTransform()
         tr.scale(dy, dx)       # scale horizontal and vertical axes
-        tr.translate(ty/dy, tx/dx) # move 3x3 image to locate center at axis origin
+        tr.translate(self.ynew[0]/dy, self.xnew[0]/dx) # move 3x3 image to locate center at axis origin
 
-        self.plot_widget.imageItem.setTransform(tr)
-        self.plot_widget.adjustSize()
-
+        self.img.setTransform(tr)
+        self.map_widget.adjustSize()
+        
+        self.p1.autoRange()
+        self.p1.invertY()
  
 
 
