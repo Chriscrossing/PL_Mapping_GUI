@@ -15,6 +15,9 @@ from PySide6.QtWidgets import (
     QDialog, QFileDialog
 )
 
+from PySide6.QtCore import Qt, QThread, Signal, QObject
+
+
 import pyqtgraph as pg
 import numpy as np
 import time
@@ -27,6 +30,12 @@ from pyqtgraph.Qt import QtGui
 
 """Global Qt Options"""
 pg.setConfigOptions(imageAxisOrder='row-major')
+
+
+"""Global Functions"""
+def closest(lst, K):
+    item = lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
+    return np.where(lst == item)[0][0]
 
 
 """
@@ -76,10 +85,126 @@ Window dialogue for selecting directories for opening data
 """
 
 class FileBrowserDialog(QFileDialog):
-    def __init__(self):
+    def __init__(self,variables: Variables):
         super().__init__()
+        self.variables = variables
         self.setWindowTitle("Open a Dataset")
         self.resize(600,400)
+
+        self.fileSelected.connect(self.loadData_and_setPath)
+        
+
+    def loadData_and_setPath(self,path):
+        #print("Load in the data from a file")
+        #print(path)
+        #print(os.path.dirname(os.path.abspath(path)))
+        wD = os.path.dirname(os.path.abspath(path))
+        self.variables.set_variable("Working Directory",wD)
+
+
+"""
+Class that runs in a seperate thread watching the spectra file and updating the plot as it's updated
+"""
+
+class CSVImageLoaderWorker(QObject):
+    data_updated = Signal(dict)
+    #coordinates_updated = Signal(np.ndarray)
+    #spectra_updated = Signal(dict) #containing the raw data, i.e. for the spectra plot
+    finished = Signal()
+
+    def __init__(self, vars: Variables, poll_interval=1.0):
+        super().__init__()
+        self.vars = vars
+        self.poll_interval = poll_interval
+        self._running = True
+        self.last_modified_time = None
+
+    def load_file(self,workingDir):
+
+        data = np.loadtxt(workingDir + "/spectra.csv", delimiter=",")
+        wavelengths = np.genfromtxt(workingDir + "/wavelenths.csv")*1e9 # load and convert to nm
+        
+        x = np.array(data[:,0],dtype=float)
+        y = np.array(data[:,1],dtype=float)
+        spectra = np.array(data[:,3:],dtype=float)
+
+        sampling_wavelength = self.vars.get_variable("Sampling Wavelength (nm)")
+        
+        idx2plot = closest(wavelengths,sampling_wavelength)
+        
+        interp_i   = LinearNDInterpolator(list(zip(x, y)), spectra[:,idx2plot],rescale=True)
+
+        """
+        Check for the smallest triangle vertex in-order to decide the interpolation resolution
+        and then interpolate the unstructured dataset to a regular grid.
+        """
+
+        points = []
+        for i in range(0,len(x)):
+            points.append((x[i],y[i]))
+
+        def euclideanDistance(coordinate1, coordinate2):
+            return pow(pow(coordinate1[0] - coordinate2[0], 2) + pow(coordinate1[1] - coordinate2[1], 2), .5)
+
+        distances = []
+        for i in range(len(points)-1):
+            for j in range(i+1, len(points)):
+                distances += [euclideanDistance(points[i],points[j])]
+
+        dx = min(distances)
+        
+        if dx>5:
+            dx = 5
+        elif dx<0.1:
+            dx = 0.1
+
+        dy = dx
+
+        x1 = min(x)
+        x2 = max(x)
+        y1 = min(y)
+        y2 = max(y)
+
+        xnew = np.arange(x1,x2+dx,dx)
+        ynew = np.arange(y1,y2+dy,dy)
+        X,Y = np.meshgrid(xnew,ynew)
+        
+        
+        #grid_z1 = interp_i(X,Y)
+        """Add everything to a dict for easy data transport"""
+        data_dict = {
+            "x":x, # irregularly distrobuted x coords
+            "y":y, # irregularly distrobuted y coords
+            "wavelengths":wavelengths, # spectra wavelengths
+            "spectra":spectra,         # irregularly distrobuted intensity counts
+            "img":interp_i(X,Y),       # re-interpolated intensity map at sampling wavelegnth
+            "x_new":xnew,              # re-interpolated x coordinates 
+            "y_new":ynew,              # re-interpolated y coordinates
+        }
+        
+        return data_dict
+
+
+    def run(self):
+        while self._running:
+            try:
+                working_dir = self.vars.get_variable("Working Directory")
+                file_path = os.path.join(working_dir, "spectra.csv")
+
+                if os.path.exists(file_path):
+                    modified_time = os.path.getmtime(file_path)
+                    if self.last_modified_time is None or modified_time > self.last_modified_time:
+                        self.last_modified_time = modified_time
+                        data_dict = self.load_file(working_dir)
+            
+                        self.data_updated.emit(data_dict)
+            except Exception as e:
+                print(f"[CSV Loader] Error loading CSV: {e}")
+
+            time.sleep(self.poll_interval)
+
+    def stop(self):
+        self._running = False
 
 
 """
@@ -90,7 +215,7 @@ class ExperimentGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Experiment GUI")
 
-        self.config = Variables()  
+        self.vars = Variables()  
 
         # Main layout
         central_widget = QWidget()
@@ -112,7 +237,7 @@ class ExperimentGUI(QMainWindow):
         #main_layout.addWidget(self.img,3)
 
         # Start image loader
-        #self.start_csv_image_loader()
+        self.start_csv_image_loader()
 
     def init_controls(self):
         self.open_button = QPushButton("Open File")
@@ -121,7 +246,7 @@ class ExperimentGUI(QMainWindow):
 
     def open_file_browser(self):
         """Callback function to open the filebrowser window"""
-        dialog = FileBrowserDialog()
+        dialog = FileBrowserDialog(self.vars)
         dialog.exec()
 
     def closeEvent(self, event):
@@ -161,6 +286,9 @@ class ExperimentGUI(QMainWindow):
 
     def init_plot_area(self):
 
+        # Set a custom color map
+        cmap = pg.colormap.getFromMatplotlib('jet')
+
         self.map_widget = pg.GraphicsLayoutWidget()
 
         self.map_widget.setWindowTitle('Data Analysis')
@@ -171,6 +299,8 @@ class ExperimentGUI(QMainWindow):
 
         # Item for displaying image data
         self.img = pg.ImageItem()
+        self.img.setColorMap(cmap)
+
         self.p1.addItem(self.img)
 
         # Custom ROI for selecting an image region
@@ -186,15 +316,15 @@ class ExperimentGUI(QMainWindow):
         self.iso.setZValue(5)
 
         # Contrast/color control
-        hist = pg.HistogramLUTItem()
-        hist.setImageItem(self.img)
-        self.map_widget.addItem(hist)
+        self.hist = pg.HistogramLUTItem()
+        self.hist.setImageItem(self.img)
+        self.map_widget.addItem(self.hist)
 
         # Draggable line for setting isocurve level
         self.isoLine = pg.InfiniteLine(angle=0, movable=True, pen='g')
-        hist.vb.addItem(self.isoLine)
-        hist.vb.setMouseEnabled(y=False) # makes user interaction a little easier
-        self.isoLine.setValue(0.8)
+        self.hist.vb.addItem(self.isoLine)
+        self.hist.vb.setMouseEnabled(y=False) # makes user interaction a little easier
+        self.isoLine.setValue(1260)
         self.isoLine.setZValue(1000) # bring iso line above contrast controls
         
         # Another plot area for displaying ROI data
@@ -210,7 +340,7 @@ class ExperimentGUI(QMainWindow):
         self.data = pg.gaussianFilter(self.data, (3, 3))
         self.data += np.random.normal(size=(200, 100)) * 0.1
         self.img.setImage(self.data)
-        hist.setLevels(self.data.min(), self.data.max())
+        self.hist.setLevels(self.data.min(), self.data.max())
 
         # build isocurves from smoothed data
         self.iso.setData(pg.gaussianFilter(self.data, (2, 2)))
@@ -233,7 +363,60 @@ class ExperimentGUI(QMainWindow):
         # but it works for a very simple use like this. 
         self.img.hoverEvent = self.imageHoverEvent
 
+    def start_csv_image_loader(self):
+        self.csv_thread = QThread()
+        self.csv_worker = CSVImageLoaderWorker(self.vars, poll_interval=1.0)
+
+        self.csv_worker.moveToThread(self.csv_thread)
+        self.csv_thread.started.connect(self.csv_worker.run)
         
+        self.csv_worker.data_updated.connect(self.update_image_data)
+        #self.csv_worker.data_updated.connect(self.update_data)
+        
+        self.csv_worker.finished.connect(self.csv_thread.quit)
+
+        self.csv_thread.start()
+
+    def update_data(self,data_dict):
+        self.xpos = data_dict['x']
+        self.ypos = data_dict['y']
+        self.wavelengths = data_dict['wavelengths']
+        self.spect = data_dict['spectra']
+
+        #self.plot_widget.plot(
+        #    self.xpos,
+        #    self.ypos,
+        #    pen=None,
+        #    symbol='o',
+        #    symbolSize=1,
+        #    #symbolBrush=pg.mkColor((256, g, b, 150))
+        #    )
+
+
+    def update_image_data(self, data_dict):
+        
+        self.data = np.flipud(data_dict['img'])
+
+        self.img.setImage(self.data)
+        self.hist.setLevels(1000, 2000)
+        self.p1.autoRange()
+        #self.plot_widget.setImage(self.image_data)
+
+
+
+    def update_image_coordinates(self,coordinates):
+        dx = coordinates[0]
+        dy = coordinates[1]
+        tx = coordinates[2]
+        ty = coordinates[3]
+
+        print(coordinates)
+        tr = QTransform()
+        tr.scale(dy, dx)       # scale horizontal and vertical axes
+        tr.translate(ty/dy, tx/dx) # move 3x3 image to locate center at axis origin
+
+        self.plot_widget.imageItem.setTransform(tr)
+        self.plot_widget.adjustSize()
 
  
 
