@@ -328,7 +328,14 @@ class ExperimentGUI(QMainWindow):
         
         
         #add a line to the spectra plot
-        self.line_plt.plot(x=self.wavelengths,y=self.spect[min_index], clear=True)
+        plot_item = self.p2.plot(
+            self.wavelengths,
+            self.spect[min_index],
+            pen=self.pens[-1],
+            name=f"X= {x}, Y = {y}"
+        )
+        #self.p2.append(plot_item)
+        
         
     def clear_plots(self,event):
         self.scatter_1.setData(x=[],y=[])
@@ -410,8 +417,8 @@ class ExperimentGUI(QMainWindow):
         self.p2.setMaximumHeight(250)
         self.map_widget.resize(800,800)
         
-        self.line_plt = pg.PlotItem()
-        self.p2.addItem(self.line_plt)
+        #self.line_plt = pg.PlotItem()
+        #self.p2.addItem(self.line_plt)
         
         
         # Generate image data
