@@ -6,7 +6,7 @@ Notes, It's working but a bit rough
 3) Add the mesh or just scatter points to show what's been collected.
 """
 
-
+import matplotlib.pyplot as plt
 import sys
 import random
 from PySide6.QtWidgets import (
@@ -133,7 +133,7 @@ class CSVImageLoaderWorker(QObject):
         
         idx2plot = closest(wavelengths,sampling_wavelength)
         
-        interp_i   = LinearNDInterpolator(list(zip(x, y)), spectra[:,idx2plot],rescale=True)
+        interp_i   = LinearNDInterpolator(list(zip(x, y)), spectra[:,idx2plot],rescale=True,fill_value=0)
 
         """
         Check for the smallest triangle vertex in-order to decide the interpolation resolution
@@ -161,24 +161,25 @@ class CSVImageLoaderWorker(QObject):
 
         dy = dx
 
-        x1 = min(x)
-        x2 = max(x)
-        y1 = min(y)
-        y2 = max(y)
+        x1 = min(x) + dx
+        x2 = max(x) - dx
+        y1 = min(y) + dy
+        y2 = max(y) - dy
 
         xnew = np.arange(x1,x2+dx,dx)
         ynew = np.arange(y1,y2+dy,dy)
         X,Y = np.meshgrid(xnew,ynew)
         
+        data = interp_i(X,Y)
         
-        #grid_z1 = interp_i(X,Y)
+
         """Add everything to a dict for easy data transport"""
         data_dict = {
             "x":x, # irregularly distrobuted x coords
             "y":y, # irregularly distrobuted y coords
             "wavelengths":wavelengths, # spectra wavelengths
             "spectra":spectra,         # irregularly distrobuted intensity counts
-            "img":interp_i(X,Y),       # re-interpolated intensity map at sampling wavelegnth
+            "img":data,       # re-interpolated intensity map at sampling wavelegnth
             "x_new":xnew,              # re-interpolated x coordinates 
             "y_new":ynew,              # re-interpolated y coordinates
         }
@@ -228,6 +229,17 @@ class ExperimentGUI(QMainWindow):
         main_layout.addLayout(self.left_panel, 1)
 
         self.init_controls()
+        
+        #Add table to record positions
+        self.table = pg.TableWidget()
+        self.left_panel.addWidget(self.table)
+        
+        self.table_data =  [
+                    ["X (um)", "Y (um)","Color"],
+                    #[1, 100, 100, 'r']
+                ]
+    
+        self.table.setData(self.table_data)
 
         # Right panel (image)
         map_and_spectrum_layout = QVBoxLayout()
@@ -294,9 +306,9 @@ class ExperimentGUI(QMainWindow):
         ppos = self.img.mapToParent(pos)
         x, y = ppos.x(), ppos.y()
         
-        
+        colour = self.colors[self.color_index % len(self.colors)]
         #create a new pen for the new point (pen is essentually a scatter point theme)"""
-        self.pens.append(pg.mkPen(width=5, color=self.colors[self.color_index % len(self.colors)]))
+        self.pens.append(pg.mkPen(width=5, color=colour))
         
         #iterate the color index so a new color is chosen"""
         self.color_index += 1
@@ -327,6 +339,11 @@ class ExperimentGUI(QMainWindow):
         self.scatter_2.setPen(self.pens)
         
         
+        self.table_data.append([closest_coord[0], closest_coord[1], colour ])
+    
+        self.table.setData(self.table_data)
+        
+        
         #add a line to the spectra plot
         plot_item = self.p2.plot(
             self.wavelengths,
@@ -343,6 +360,12 @@ class ExperimentGUI(QMainWindow):
         self.p2.clear()
         self.pens = []
         self.color_index = 0
+        self.table_data =  [
+                    ["X (um)", "Y (um)","Color"],
+                    #[1, 100, 100, 'r']
+                ]
+    
+        self.table.setData(self.table_data)
 
     def imageHoverEvent(self,event):
         """Show the position, pixel, and value under the mouse cursor.
@@ -357,12 +380,11 @@ class ExperimentGUI(QMainWindow):
         val = self.data[i, j]
         ppos = self.img.mapToParent(pos)
         x, y = ppos.x(), ppos.y()
-        self.p1.setTitle("pos: (%0.1f, %0.1f)  pixel: (%d, %d)  value: %.3g" % (x, y, i, j, val))
+        self.p1.setTitle("pos (X,Y): (%0.3f, %0.3f) um,  value: %.3g" % (y, x, val))
 
     def init_plot_area(self):
 
-        #cmap = pg.colormap.getFromMatplotlib('jet')
-        #self.img.setColorMap(cmap)
+        
 
         # Set a custom color map
         
@@ -372,10 +394,14 @@ class ExperimentGUI(QMainWindow):
 
         # A plot area (ViewBox + axes) for displaying the image
         self.p1 = self.map_widget.addPlot()
+        
+        self.p1.setLabel(axis='left', text='X-axis, um')
+        self.p1.setLabel(axis='bottom', text='Y-axis, um')
 
         # Item for displaying image data
         self.img = pg.ImageItem()
 
+        
 
         self.p1.addItem(self.img)
 
@@ -395,14 +421,16 @@ class ExperimentGUI(QMainWindow):
         #self.roi.setZValue(10)  # make sure ROI is drawn above image
 
         # Isocurve drawing
-        self.iso = pg.IsocurveItem(level=0.8, pen='g')
-        self.iso.setParentItem(self.img)
-        self.iso.setZValue(5)
+        #self.iso = pg.IsocurveItem(level=0.8, pen='g')
+        #self.iso.setParentItem(self.img)
+        #self.iso.setZValue(5)
 
         # Contrast/color control
         self.hist = pg.HistogramLUTItem()
         self.hist.setImageItem(self.img)
         self.map_widget.addItem(self.hist)
+
+        
 
         # Draggable line for setting isocurve level
         #self.isoLine = pg.InfiniteLine(angle=0, movable=True, pen='g')
@@ -475,10 +503,20 @@ class ExperimentGUI(QMainWindow):
         for i in range(0,len(self.xpos)):
             self.coordinates.append((self.xpos[i],self.ypos[i]))
             
-        self.data = (data_dict['img']).T
+        self.data = np.array(data_dict['img']).T
+        
+        print(np.shape(self.data))
 
         self.img.setImage(self.data)
-        self.hist.setLevels(1000, 2000)
+        
+        print(np.isnan(self.data))
+        
+        minimum = np.min(self.data)
+        maximum = np.max(self.data)
+        
+        print(minimum,maximum)
+        
+        self.hist.setLevels(minimum,maximum)
         
 
         dx = self.xnew[1]-self.xnew[0]
@@ -493,6 +531,10 @@ class ExperimentGUI(QMainWindow):
         
         self.p1.autoRange()
         self.p1.invertY()
+        
+        #change cmaps
+        #cmap = pg.colormap.getFromMatplotlib('jet')
+        #self.img.setColorMap(cmap)
  
 
 
