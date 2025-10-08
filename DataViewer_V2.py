@@ -46,21 +46,27 @@ Class for storing Variables
 class Variables:
     def __init__(self):
         self._vars = {
-            "ccd_target_temp": -90,
-            "variables": {
-                "Working Directory": "Results/2025-09-04/RM_2/",
-                "Exposure Time (s)": 10,
-                "Number of Samples": 3,
-                "Center Wavelength (nm)": 613.4,
-                "Slit Width (um)": 100,
-                "X Center (um)": 100,
-                "Y Center (um)": 100,
-                "dx (um)": 200,
-                "dy (um)": 200,
-                "Wait time (s)": 0.05,
-                "Adaptive Loss Condition": 0.001,
-                "Sampling Wavelength (nm)": 615
-            },
+            #Experiment Settings
+            "Working Directory": "Results/2025-09-04/RM_2/",
+            
+            #Spectrometer Camera Settings
+            "CCD Temp (C)": -90,
+            "Exposure Time (s)": 10,
+            "Number of Samples": 3,
+            
+            #Spectrometer Settings
+            "Center Wavelength (nm)": 613.4,
+            "Slit Width (um)": 100,
+            
+            #Map settings
+            "X Center (um)": 100,
+            "Y Center (um)": 100,
+            "dx (um)": 100,
+            "dy (um)": 100,
+            "Wait time (s)": 0.05,
+            "Adaptive Loss Condition": 0.001,
+            "Sampling Wavelength (nm)": 615
+
         }
 
         self.x = np.array
@@ -69,16 +75,13 @@ class Variables:
         self.wavelengths = np.array
 
     def set_variable(self, name: str, value):
-        self._vars["variables"][name] = value
+        self._vars[name] = value
 
     def get_variable(self, name: str):
-        return self._vars["variables"].get(name, None)
+        return self._vars.get(name, None)
 
     def get_all_variables(self):
-        return self._vars["variables"]
-
-    def __repr__(self):
-        return str(self._config)
+        return self._vars
 
 
 """
@@ -101,6 +104,73 @@ class FileBrowserDialog(QFileDialog):
         #print(os.path.dirname(os.path.abspath(path)))
         wD = os.path.dirname(os.path.abspath(path))
         self.variables.set_variable("Working Directory",wD)
+
+"""
+Window dialogue for changing variables
+"""
+
+class VariableDialog(QDialog):
+    def __init__(self, Variables: Variables):
+        super().__init__()
+        self.setWindowTitle("Set Variables")
+        self.setMinimumWidth(450)
+        self.Variables = Variables
+
+        layout = QVBoxLayout()
+        self.input_fields = {}
+
+        variable_names = [
+            #Experiment Settings
+            #"Working Directory",
+            
+            #Spectrometer Camera Settings
+            "CCD Temp (C)",
+            "Exposure Time (s)",
+            "Number of Samples",
+            
+            #Spectrometer Settings
+            "Center Wavelength (nm)",
+            "Slit Width (um)",
+            
+            #Map settings
+            "X Center (um)",
+            "Y Center (um)",
+            "dx (um)",
+            "dy (um)",
+            "Wait time (s)",
+            "Adaptive Loss Condition",
+            "Sampling Wavelength (nm)"
+        ]
+
+        for name in variable_names:
+            row = QHBoxLayout()
+            label = QLabel(name)
+            input_line = QLineEdit()
+            input_line.setText(str(self.Variables.get_variable(name) or ""))
+            self.input_fields[name] = input_line
+            row.addWidget(label)
+            row.addWidget(input_line)
+            layout.addLayout(row)
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        self.set_button = QPushButton("Set")
+        self.cancel_button = QPushButton("Cancel")
+        button_layout.addWidget(self.set_button)
+        button_layout.addWidget(self.cancel_button)
+
+        layout.addSpacing(10)
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+
+        self.cancel_button.clicked.connect(self.close)
+        self.set_button.clicked.connect(self.set_variables)
+
+    def set_variables(self):
+        for name, field in self.input_fields.items():
+            self.Variables.set_variable(name, field.text())
+        self.accept()
+
 
 
 """
@@ -261,16 +331,25 @@ class ExperimentGUI(QMainWindow):
     def init_controls(self):
         self.open_button = QPushButton("Open File")
         self.left_panel.addWidget(self.open_button)
+
+        self.parameter_button = QPushButton("Parameters")
+        self.left_panel.addWidget(self.parameter_button)
         
         self.clear_button = QPushButton("Clear Points")
         self.left_panel.addWidget(self.clear_button)
         
         self.open_button.clicked.connect(self.open_file_browser)
         self.clear_button.clicked.connect(self.clear_plots)
+        self.parameter_button.clicked.connect(self.open_parameter_window)
 
     def open_file_browser(self):
         """Callback function to open the filebrowser window"""
         dialog = FileBrowserDialog(self.vars)
+        dialog.exec()
+
+    def open_parameter_window(self):
+        """Callback to open the parameters window"""
+        dialog = VariableDialog(self.vars)
         dialog.exec()
 
     def closeEvent(self, event):
@@ -313,11 +392,13 @@ class ExperimentGUI(QMainWindow):
         #iterate the color index so a new color is chosen"""
         self.color_index += 1
         
+        """Removed the scatter point where the user has clicked, instead 
+            we can just keep the scatter point that shows the closest datapoint
+        """
         #Add the scatter point to the figure"""
-        self.scatter_1.addPoints(x=[x],y=[y])
-        
+        #self.scatter_1.addPoints(x=[x],y=[y])
         #update the list of pens"""
-        self.scatter_1.setPen(self.pens)
+        #self.scatter_1.setPen(self.pens) 
         
         #maybe we need this idk
         #self.positions.append((x,y))
@@ -505,16 +586,16 @@ class ExperimentGUI(QMainWindow):
             
         self.data = np.array(data_dict['img']).T
         
-        print(np.shape(self.data))
+        #print(np.shape(self.data))
 
         self.img.setImage(self.data)
         
-        print(np.isnan(self.data))
+        #print(np.isnan(self.data))
         
         minimum = np.min(self.data)
         maximum = np.max(self.data)
         
-        print(minimum,maximum)
+        #print(minimum,maximum)
         
         self.hist.setLevels(minimum,maximum)
         
