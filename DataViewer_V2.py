@@ -171,6 +171,51 @@ class VariableDialog(QDialog):
             self.Variables.set_variable(name, field.text())
         self.accept()
 
+"""
+Window for controlling the MCL stage manually
+"""
+
+class MCL_Directional_CTRL(QDialog):
+    def __init__(self, Variables: Variables):
+        super().__init__()
+        self.setWindowTitle("MCL Stage Control")
+        self.setMinimumWidth(450)
+        self.Variables = Variables
+
+        self.up_button = QPushButton("-x")
+        self.down_button = QPushButton("+x")
+        self.left_button = QPushButton("-y")
+        self.right_button = QPushButton("+y")
+        self.z_up_button = QPushButton("Z+")
+        self.z_down_button = QPushButton("Z-")
+
+        self.x_pos_label = QLabel("X: 0.0")
+        self.y_pos_label = QLabel("Y: 0.0")
+        self.z_pos_label = QLabel("Z: 0.0")
+
+        grid = QGridLayout()
+        
+        grid.addWidget(self.up_button, 0, 1)
+        grid.addWidget(self.left_button, 1, 0)
+        grid.addWidget(self.right_button, 1, 2)
+        grid.addWidget(self.down_button, 2, 1)
+        #grid.addWidget(self.z_up_button, 1, 1)
+        #grid.addWidget(self.z_down_button, 3, 1)
+
+        pos_layout = QVBoxLayout()
+        pos_layout.addWidget(self.x_pos_label)
+        pos_layout.addWidget(self.y_pos_label)
+        pos_layout.addWidget(self.z_pos_label)
+
+        container = QHBoxLayout()
+        button_widget = QWidget()
+        button_widget.setLayout(grid)
+
+        container.addWidget(button_widget)
+        container.addLayout(pos_layout)
+
+        self.setLayout(container)
+
 
 
 """
@@ -334,6 +379,9 @@ class ExperimentGUI(QMainWindow):
 
         self.parameter_button = QPushButton("Parameters")
         self.left_panel.addWidget(self.parameter_button)
+
+        self.MCL_button = QPushButton("Manual Stage Control")
+        self.left_panel.addWidget(self.MCL_button)
         
         self.clear_button = QPushButton("Clear Points")
         self.left_panel.addWidget(self.clear_button)
@@ -341,6 +389,7 @@ class ExperimentGUI(QMainWindow):
         self.open_button.clicked.connect(self.open_file_browser)
         self.clear_button.clicked.connect(self.clear_plots)
         self.parameter_button.clicked.connect(self.open_parameter_window)
+        self.MCL_button.clicked.connect(self.open_MCL_stage_ctrl)
 
     def open_file_browser(self):
         """Callback function to open the filebrowser window"""
@@ -350,6 +399,11 @@ class ExperimentGUI(QMainWindow):
     def open_parameter_window(self):
         """Callback to open the parameters window"""
         dialog = VariableDialog(self.vars)
+        dialog.exec()
+
+    def open_MCL_stage_ctrl(self):
+        """Callback to open the MCL stage control window"""
+        dialog = MCL_Directional_CTRL(self.vars)
         dialog.exec()
 
     def closeEvent(self, event):
