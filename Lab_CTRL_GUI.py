@@ -1,11 +1,3 @@
-"""
-Notes, It's working but a bit rough
-
-1) No axis on the main plot
-2) Add symbols to the main plot with the location of the extracted spectra highlihgted
-3) Add the mesh or just scatter points to show what's been collected.
-"""
-
 import matplotlib.pyplot as plt
 import sys
 import random
@@ -64,8 +56,8 @@ class Variables:
             "dx (um)": 100,
             "dy (um)": 100,
             "Wait time (s)": 0.05,
-            "Adaptive Loss Condition": 0.001,
-            "Sampling Wavelength (nm)": 615
+            "AS Loss Condition": 0.001,
+            "AS Wavelength (nm)": 615
 
         }
 
@@ -105,71 +97,6 @@ class FileBrowserDialog(QFileDialog):
         wD = os.path.dirname(os.path.abspath(path))
         self.variables.set_variable("Working Directory",wD)
 
-"""
-Window dialogue for changing variables
-"""
-
-class VariableDialog(QDialog):
-    def __init__(self, Variables: Variables):
-        super().__init__()
-        self.setWindowTitle("Set Variables")
-        self.setMinimumWidth(450)
-        self.Variables = Variables
-
-        layout = QVBoxLayout()
-        self.input_fields = {}
-
-        variable_names = [
-            #Experiment Settings
-            #"Working Directory",
-            
-            #Spectrometer Camera Settings
-            "CCD Temp (C)",
-            "Exposure Time (s)",
-            "Number of Samples",
-            
-            #Spectrometer Settings
-            "Center Wavelength (nm)",
-            "Slit Width (um)",
-            
-            #Map settings
-            "X Center (um)",
-            "Y Center (um)",
-            "dx (um)",
-            "dy (um)",
-            "Wait time (s)",
-            "Adaptive Loss Condition",
-            "Sampling Wavelength (nm)"
-        ]
-
-        for name in variable_names:
-            row = QHBoxLayout()
-            label = QLabel(name)
-            input_line = QLineEdit()
-            input_line.setText(str(self.Variables.get_variable(name) or ""))
-            self.input_fields[name] = input_line
-            row.addWidget(label)
-            row.addWidget(input_line)
-            layout.addLayout(row)
-
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        self.set_button = QPushButton("Set")
-        self.cancel_button = QPushButton("Cancel")
-        button_layout.addWidget(self.set_button)
-        button_layout.addWidget(self.cancel_button)
-
-        layout.addSpacing(10)
-        layout.addLayout(button_layout)
-        self.setLayout(layout)
-
-        self.cancel_button.clicked.connect(self.close)
-        self.set_button.clicked.connect(self.set_variables)
-
-    def set_variables(self):
-        for name, field in self.input_fields.items():
-            self.Variables.set_variable(name, field.text())
-        self.accept()
 
 """
 Window for controlling the MCL stage manually
@@ -192,6 +119,14 @@ class MCL_Directional_CTRL(QDialog):
         self.x_pos_label = QLabel("X: 0.0")
         self.y_pos_label = QLabel("Y: 0.0")
         self.z_pos_label = QLabel("Z: 0.0")
+        
+        self.x_step = QLineEdit("5")
+        self.y_step = QLineEdit("5")
+        self.z_step = QLineEdit("5")
+
+        self.x_goto = QLineEdit("100")
+        self.y_goto = QLineEdit("100")
+        self.z_goto = QLineEdit("100")
 
         grid = QGridLayout()
         
@@ -199,20 +134,54 @@ class MCL_Directional_CTRL(QDialog):
         grid.addWidget(self.left_button, 1, 0)
         grid.addWidget(self.right_button, 1, 2)
         grid.addWidget(self.down_button, 2, 1)
-        #grid.addWidget(self.z_up_button, 1, 1)
-        #grid.addWidget(self.z_down_button, 3, 1)
+        
+        grid.addWidget(self.z_up_button, 0, 3)
+        grid.addWidget(self.z_down_button, 2, 3)
 
-        pos_layout = QVBoxLayout()
+        pos_layout = QHBoxLayout()
         pos_layout.addWidget(self.x_pos_label)
         pos_layout.addWidget(self.y_pos_label)
         pos_layout.addWidget(self.z_pos_label)
 
-        container = QHBoxLayout()
+        
+        step_layout = QHBoxLayout()
+        label = QLabel("X step: ")
+        label.setToolTip("um")
+        step_layout.addWidget(label)
+        step_layout.addWidget(self.x_step)
+        label = QLabel("Y step: ")
+        label.setToolTip("um")
+        step_layout.addWidget(label)
+        step_layout.addWidget(self.y_step)
+        label = QLabel("Z step: ")
+        label.setToolTip("um")
+        step_layout.addWidget(label)
+        step_layout.addWidget(self.z_step)
+        
+        absolute_layout = QHBoxLayout()
+        label = QLabel("X: ")
+        label.setToolTip("um")
+        absolute_layout.addWidget(label)
+        absolute_layout.addWidget(self.x_goto)
+        label = QLabel("Y: ")
+        label.setToolTip("um")
+        absolute_layout.addWidget(label)
+        absolute_layout.addWidget(self.y_goto)
+        label = QLabel("Z: ")
+        label.setToolTip("um")
+        absolute_layout.addWidget(label)
+        absolute_layout.addWidget(self.z_goto)
+        self.goto_button = QPushButton("Go")
+        absolute_layout.addWidget(self.goto_button)
+
+        container = QVBoxLayout()
         button_widget = QWidget()
         button_widget.setLayout(grid)
-
-        container.addWidget(button_widget)
+        
         container.addLayout(pos_layout)
+        container.addLayout(absolute_layout)
+        container.addWidget(button_widget)
+        container.addLayout(step_layout)
 
         self.setLayout(container)
 
@@ -237,14 +206,14 @@ class CSVImageLoaderWorker(QObject):
 
     def load_file(self,workingDir):
 
-        data = np.loadtxt(workingDir + "/spectra.csv", delimiter=",")
+        data = np.genfromtxt(workingDir + "/spectra.csv", delimiter=",")
         wavelengths = np.genfromtxt(workingDir + "/wavelenths.csv")*1e9 # load and convert to nm
         
         x = np.array(data[:,0],dtype=float)
         y = np.array(data[:,1],dtype=float)
         spectra = np.array(data[:,3:],dtype=float)
 
-        sampling_wavelength = self.vars.get_variable("Sampling Wavelength (nm)")
+        sampling_wavelength = self.vars.get_variable("AS Wavelength (nm)")
         
         idx2plot = closest(wavelengths,sampling_wavelength)
         
@@ -325,9 +294,9 @@ class CSVImageLoaderWorker(QObject):
 
 
 """
-Main GUI Class
+Main Window, For DataAnalysis
 """
-class ExperimentGUI(QMainWindow):
+class DataAnalysisGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Data Viewer")
@@ -377,28 +346,24 @@ class ExperimentGUI(QMainWindow):
         self.open_button = QPushButton("Open File")
         self.left_panel.addWidget(self.open_button)
 
-        self.parameter_button = QPushButton("Parameters")
-        self.left_panel.addWidget(self.parameter_button)
-
-        self.MCL_button = QPushButton("Manual Stage Control")
-        self.left_panel.addWidget(self.MCL_button)
+        self.experiment_control = QPushButton("Experiment Control")
+        self.left_panel.addWidget(self.experiment_control)
         
         self.clear_button = QPushButton("Clear Points")
         self.left_panel.addWidget(self.clear_button)
         
         self.open_button.clicked.connect(self.open_file_browser)
         self.clear_button.clicked.connect(self.clear_plots)
-        self.parameter_button.clicked.connect(self.open_parameter_window)
-        self.MCL_button.clicked.connect(self.open_MCL_stage_ctrl)
+        self.experiment_control.clicked.connect(self.open_experiment_control)
 
     def open_file_browser(self):
         """Callback function to open the filebrowser window"""
         dialog = FileBrowserDialog(self.vars)
         dialog.exec()
 
-    def open_parameter_window(self):
-        """Callback to open the parameters window"""
-        dialog = VariableDialog(self.vars)
+    def open_experiment_control(self):
+        """Callback to open the experiment control window"""
+        dialog = ExperimentGUI()
         dialog.exec()
 
     def open_MCL_stage_ctrl(self):
@@ -414,17 +379,6 @@ class ExperimentGUI(QMainWindow):
             self.csv_thread.wait()
 
         event.accept()
-
-    # Callbacks for handling user interaction
-    def updatePlot(self):
-        #global img, roi, data, p2
-        #selected = self.roi.getArrayRegion(self.data, self.img)
-        #self.p2.plot(selected.mean(axis=0), clear=True)
-        pass
-
-    def updateIsocurve(self):
-        global isoLine, iso
-        self.iso.setLevel(self.isoLine.value())
         
     # creating a mouse double click event
     def mouseDblClick(self, event):
@@ -671,12 +625,210 @@ class ExperimentGUI(QMainWindow):
         #cmap = pg.colormap.getFromMatplotlib('jet')
         #self.img.setColorMap(cmap)
  
+class ExperimentGUI(QDialog):
+    def __init__(self):
+        super().__init__()
+        
+        self.vars = Variables()  
+        
+        self.setWindowTitle(self.vars.get_variable("Working Directory"))
 
+        main_layout = QHBoxLayout()
+
+        # Left panel (buttons + controls)
+        self.left_panel = QVBoxLayout()
+        main_layout.addLayout(self.left_panel, 1)
+
+        self.init_controls()
+        
+        # Right panel (image)
+        map_and_spectrum_layout = QVBoxLayout()
+        main_layout.addLayout(map_and_spectrum_layout, 4)
+        self.init_plot_area()
+        map_and_spectrum_layout.addWidget(self.map_widget, 4)
+        
+        # Initialise list of spectra points
+        self.positions = []
+        self.colors = ['r', 'g', 'b', 'c', 'm', 'y', 'w']
+        self.color_index = 0
+        self.pens = []
+        
+        self.setLayout(main_layout)
+
+    def init_controls(self):
+        
+        
+        self.set_folder_button = QPushButton("Set Experiment Folder")
+        self.set_folder_button.setToolTip("Choose where to save the experiment")
+        self.left_panel.addWidget(self.set_folder_button)
+        
+        row = QHBoxLayout()
+        label = QLabel("Instrument Status:")
+        row.addWidget(label)
+        self.connect_instruments_status = QLabel("Disconnected")
+        row.addWidget(self.connect_instruments_status)
+        self.connect_instruments = QPushButton("Connect")
+        self.connect_instruments.setToolTip("Connect to all instruments and set default values")
+        row.addWidget(self.connect_instruments)
+        
+        self.left_panel.addLayout(row)
+
+        self.MCL_button = QPushButton("Manual Stage Control")
+        self.set_folder_button.setToolTip("Open a new window to manually control the MCL Stage")
+        self.left_panel.addWidget(self.MCL_button)
+        
+        label = QLabel("Experiment Variables")
+        self.left_panel.addWidget(label)
+        self.input_fields = {}
+        
+        variable_names = [
+            #Experiment Settings
+            #"Working Directory",
+            
+            #Spectrometer Camera Settings
+            "CCD Temp (C)",
+            "Exposure Time (s)",
+            "Number of Samples",
+            
+            #Spectrometer Settings
+            "Center Wavelength (nm)",
+            "Slit Width (um)",
+            
+            #Map settings
+            "X Center (um)",
+            "Y Center (um)",
+            "dx (um)",
+            "dy (um)",
+            "Wait time (s)",
+            "AS Loss Condition",
+            "AS Wavelength (nm)"
+        ]
+        
+        variable_tooltips = [
+            "Set temperature of the spectrometer camera",
+            "Exposure time for each specturm in seconds",
+            "Number of spectra to take the median over (mainly to remove cosmic rays, but also reduces noise)",
+            "Center wavelength of the spectrometer",
+            "Size of the slit at the enterence to the spectrometer",
+            "Center X coordinate for the mapping",
+            "Center Y coordinate for the mapping",
+            "Size of the mapping area in the X direction",
+            "Size of the mapping area in the Y direction",
+            "Time to wait between moving the MCL stage and taking a spectra",
+            "Adaptive Sampling Loss Condition (related to the minimum feature size)",
+            "The wavelength that the Adaptive Sampling Alogrithm uses to measure intensity"
+            
+        ]
+
+        for name,tooltip in zip(variable_names,variable_tooltips):
+            row = QHBoxLayout()
+            label = QLabel(name)
+            label.setToolTip(tooltip)
+            input_line = QLineEdit()
+            input_line.setText(str(self.vars.get_variable(name) or ""))
+            input_line.setFixedWidth(100)
+            self.input_fields[name] = input_line
+            row.addWidget(label)
+            #row.addSpacing(10)
+            row.addWidget(input_line)
+            self.left_panel.addLayout(row)
+
+        self.set_button = QPushButton("Set Variables")
+        self.set_button.setToolTip("Save and Apply Variables")
+        self.left_panel.addWidget(self.set_button)
+        
+        label = QLabel("Experiment Control")
+        self.left_panel.addWidget(label)
+        
+        row = QHBoxLayout()
+        self.single_spectra = QPushButton("Single Spectra")
+        self.single_spectra.setToolTip("Take a single spectrum")
+        row.addWidget(self.single_spectra)
+        self.repeating_spectra = QPushButton("Repeating Spectra")
+        self.repeating_spectra.setToolTip("Continously take spectra")
+        row.addWidget(self.repeating_spectra)
+        self.left_panel.addLayout(row)
+        
+        self.clear_button = QPushButton("Clear Plot")
+        self.left_panel.addWidget(self.clear_button)
+        
+        self.run_adaptive_sampling = QPushButton("Run Adaptive Sampling")
+        self.run_adaptive_sampling.setToolTip("Start Adaptive Sampling Run")
+        self.left_panel.addWidget(self.run_adaptive_sampling)
+        
+        
+        self.n_sampling_pts = QLabel("0 Sampling Pts in 0 Seconds")
+        self.left_panel.addWidget(self.n_sampling_pts)
+        
+        row = QHBoxLayout()
+        label = QLabel("Current CCD Temp:")
+        row.addWidget(label)
+        self.current_CCD_temp_label = QLabel("20 C")
+        row.addWidget(self.current_CCD_temp_label)
+        row.addSpacing(10)
+        self.left_panel.addLayout(row)
+        
+        
+        self.set_folder_button.clicked.connect(self.open_file_browser)
+        self.set_button.clicked.connect(self.set_variables)
+        self.clear_button.clicked.connect(self.clear_plots)
+        self.MCL_button.clicked.connect(self.open_MCL_stage_ctrl)
+
+    def open_file_browser(self):
+        """Callback function to open the filebrowser window"""
+        dialog = FileBrowserDialog(self.vars)
+        dialog.exec()
+
+    def open_MCL_stage_ctrl(self):
+        """Callback to open the MCL stage control window"""
+        dialog = MCL_Directional_CTRL(self.vars)
+        dialog.exec()
+        
+    def set_variables(self):
+        """Grab all variables from the user inputs and update the vars dict"""
+        for name, field in self.input_fields.items():
+            self.vars.set_variable(name, field.text())
+        self.accept()
+
+    def closeEvent(self, event):
+        # Make sure to stop the CSV image loader
+        if hasattr(self, 'csv_worker'):
+            self.csv_worker.stop()
+            self.csv_thread.quit()
+            self.csv_thread.wait()
+
+        event.accept()
+        
+    def clear_plots(self,event):
+        self.scatter_1.setData(x=[],y=[])
+        self.scatter_2.setData(x=[],y=[])
+        self.p2.clear()
+        self.pens = []
+        self.color_index = 0
+        self.table_data =  [
+                    ["X (um)", "Y (um)","Color"],
+                    #[1, 100, 100, 'r']
+                ]
+    
+        self.table.setData(self.table_data)
+
+    def init_plot_area(self):
+
+        self.map_widget = pg.GraphicsLayoutWidget()
+        self.map_widget.setWindowTitle('Data Analysis')
+
+        # Add a line plot for showing spectra
+        self.p1 = self.map_widget.addPlot()
+        #self.p1.setMaximumHeight(250)
+        self.map_widget.resize(1600,900)
+        
+
+    
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    gui = ExperimentGUI()
+    gui = DataAnalysisGUI()
     gui.resize(1200, 800)
     gui.show()
     sys.exit(app.exec())
