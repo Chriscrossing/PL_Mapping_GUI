@@ -1,25 +1,18 @@
 import matplotlib.pyplot as plt
-import sys
-import random
+import numpy as np
+from scipy.interpolate import LinearNDInterpolator
+
+import sys, csv, os, time
 from PySide6.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QScrollArea, QGridLayout, QMainWindow, QSlider,
-    QDialog, QFileDialog
+    QLabel, QLineEdit, QGridLayout, QMainWindow, QDialog, QFileDialog, QPlainTextEdit
 )
-
 from PySide6.QtCore import Qt, QThread, Signal, QObject
-
 from PySide6.QtGui import QTransform
-
 import pyqtgraph as pg
-import numpy as np
-import time
-import os
-from scipy.interpolate import griddata, LinearNDInterpolator, CloughTocher2DInterpolator
 
-
-import pyqtgraph as pg
-from pyqtgraph.Qt import QtGui
+from LabCTRL import ExperimentCTRL
+from pathlib import Path
 
 """Global Qt Options"""
 pg.setConfigOptions(imageAxisOrder='row-major')
@@ -38,6 +31,8 @@ Class for storing Variables
 class Variables:
     def __init__(self):
         self._vars = {
+            #Dataviewer Settings
+            "Dataviewer Directory": "Results/2025-09-04/RM_2/",
             #Experiment Settings
             "Working Directory": "Results/2025-09-04/RM_2/",
             
@@ -75,39 +70,53 @@ class Variables:
     def get_all_variables(self):
         return self._vars
 
+    def saveMetadata(self):
+        Path(self._vars['Working Directory']).mkdir(parents=True, exist_ok=True)
+
+        w = csv.writer(open(self._vars['Working Directory'] + "metadata.csv", "w",newline=''))
+        for key, val in self.V.items():
+            w.writerow([key,val])
+        np.savetxt(self._vars['Working Directory'] + "wavelenths.csv",self.wavelengths,delimiter=',')
+
 
 """
 Window dialogue for selecting directories for opening data
 """
 
 class FileBrowserDialog(QFileDialog):
-    def __init__(self,variables: Variables):
+    def __init__(self,variables: Variables,expPath):
         super().__init__()
         self.variables = variables
-        self.setWindowTitle("Open a Dataset")
+        self.setWindowTitle("Select a Folder")
         self.resize(600,400)
-
-        self.fileSelected.connect(self.loadData_and_setPath)
         
+        # Set the file dialog to select directories only
+        self.setFileMode(QFileDialog.Directory)
+        self.setOption(QFileDialog.ShowDirsOnly, True)
 
-    def loadData_and_setPath(self,path):
-        #print("Load in the data from a file")
-        #print(path)
-        #print(os.path.dirname(os.path.abspath(path)))
-        wD = os.path.dirname(os.path.abspath(path))
-        self.variables.set_variable("Working Directory",wD)
+        if expPath:
+            self.fileSelected.connect(self.set_experiment_Path)
+        else:
+            self.fileSelected.connect(self.set_dataviewer_Path)
+        
+    def set_dataviewer_Path(self,path):
+        self.variables.set_variable("Dataviewer Directory",path + "\\")
+        
+    def set_experiment_Path(self,path):
+        self.variables.set_variable("Working Directory",path + "\\")
 
 
 """
 Window for controlling the MCL stage manually
 """
 
-class MCL_Directional_CTRL(QDialog):
-    def __init__(self, Variables: Variables):
+class MCL_Directional_CTRL(QWidget):
+    def __init__(self, Variables: Variables, Exp: ExperimentCTRL):
         super().__init__()
         self.setWindowTitle("MCL Stage Control")
         self.setMinimumWidth(450)
         self.Variables = Variables
+        self.Exp = Exp
 
         self.up_button = QPushButton("-x")
         self.down_button = QPushButton("+x")
@@ -142,6 +151,8 @@ class MCL_Directional_CTRL(QDialog):
         pos_layout.addWidget(self.x_pos_label)
         pos_layout.addWidget(self.y_pos_label)
         pos_layout.addWidget(self.z_pos_label)
+        self.refresh_position = QPushButton("Refresh")
+        pos_layout.addWidget(self.refresh_position)
 
         
         step_layout = QHBoxLayout()
@@ -184,23 +195,125 @@ class MCL_Directional_CTRL(QDialog):
         container.addLayout(step_layout)
 
         self.setLayout(container)
+        
+        self.goto_button.clicked.connect(self.goto_xyz)
+        self.refresh_position.clicked.connect(self.pol_position)
+        self.up_button.clicked.connect(self.step_minux_x)
+        self.down_button.clicked.connect(self.step_plus_x)
+        self.right_button.clicked.connect(self.step_plus_y)
+        self.left_button.clicked.connect(self.step_minus_y)
+        self.z_down_button.clicked.connect(self.step_minus_z)
+        self.z_up_button.clicked.connect(self.step_plus_z)
 
-
-
+    def step_plus_x(self):
+        try:
+            dx = float(self.x_step.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")
+        
+        pos = self.pol_position()
+        
+        self.x_goto.text(str(pos[0]+dx))
+        self.goto_xyz()
+        
+    def step_minux_x(self):
+        try:
+            dx = float(self.x_step.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")
+        
+        pos = self.pol_position()
+        
+        self.x_goto.text(str(pos[0]-dx))
+        self.goto_xyz()
+        
+    def step_plus_y(self):
+        try:
+            dy = float(self.y_step.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")
+        
+        pos = self.pol_position()
+        
+        self.y_goto.text(str(pos[1]+dy))
+        self.goto_xyz()
+        
+    def step_minus_y(self):
+        try:
+            dy = float(self.y_step.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")
+        
+        pos = self.pol_position()
+        
+        self.y_goto.text(str(pos[1]-dy))
+        self.goto_xyz()
+            
+    def step_plus_z(self):
+        try:
+            dz = float(self.z_step.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")
+        
+        pos = self.pol_position()
+        
+        self.z_goto.text(str(pos[2]+dz))
+        self.goto_xyz()
+        
+    def step_minus_z(self):
+        try:
+            dz = float(self.z_step.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")
+        
+        pos = self.pol_position()
+        
+        self.z_goto.text(str(pos[2]-dz))
+        self.goto_xyz()
+    
+    def goto_xyz(self):
+        
+        try:
+            x = float(self.x_goto.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")
+        try:
+            y = float(self.y_goto.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")
+        try:
+            z = float(self.z_goto.text())
+        except Exception as e:
+            print(f"[MCL_CTRL] x value error: {e}")    
+            
+        
+        self.Exp.piezo.goxy(x,y)
+        self.Exp.piezo.goz(z)
+        time.sleep(self.Variables.get_variable("Wait time (s)"))
+        actual_pos = self.Exp.piezo.get_position()
+        
+        self.x_pos_label.setText(str(actual_pos[0]))
+        self.y_pos_label.setText(str(actual_pos[1]))
+        self.z_pos_label.setText(str(actual_pos[2]))
+        
+    def pol_position(self):
+        actual_pos = self.Exp.piezo.get_position()
+        
+        self.x_pos_label.setText(str(actual_pos[0]))
+        self.y_pos_label.setText(str(actual_pos[1]))
+        self.z_pos_label.setText(str(actual_pos[2]))
+        return actual_pos
 """
 Class that runs in a seperate thread watching the spectra file and updating the plot as it's updated
 """
 
 class CSVImageLoaderWorker(QObject):
     data_updated = Signal(dict)
-    #coordinates_updated = Signal(np.ndarray)
-    #spectra_updated = Signal(dict) #containing the raw data, i.e. for the spectra plot
     finished = Signal()
 
-    def __init__(self, vars: Variables, poll_interval=1.0):
+    def __init__(self, vars: Variables):
         super().__init__()
         self.vars = vars
-        self.poll_interval = poll_interval
         self._running = True
         self.last_modified_time = None
 
@@ -272,23 +385,17 @@ class CSVImageLoaderWorker(QObject):
 
 
     def run(self):
-        while self._running:
-            try:
-                working_dir = self.vars.get_variable("Working Directory")
-                file_path = os.path.join(working_dir, "spectra.csv")
-
-                if os.path.exists(file_path):
-                    modified_time = os.path.getmtime(file_path)
-                    if self.last_modified_time is None or modified_time > self.last_modified_time:
-                        self.last_modified_time = modified_time
-                        data_dict = self.load_file(working_dir)
-            
-                        self.data_updated.emit(data_dict)
-            except Exception as e:
-                print(f"[CSV Loader] Error loading CSV: {e}")
-
-            time.sleep(self.poll_interval)
-
+        try:
+            working_dir = self.vars.get_variable("Dataviewer Directory")
+            file_path = os.path.join(working_dir, "spectra.csv")
+            if os.path.exists(file_path):
+                data_dict = self.load_file(working_dir)    
+                self.data_updated.emit(data_dict)
+                
+        except Exception as e:
+            print(f"[CSV Loader] Error loading CSV: {e}")
+        self.finished.emit()
+    
     def stop(self):
         self._running = False
 
@@ -334,42 +441,75 @@ class DataAnalysisGUI(QMainWindow):
         #main_layout.addWidget(self.img,3)
 
         # Start image loader
-        self.start_csv_image_loader()
+        #self.start_csv_image_loader()
         
         # Initialise list of spectra points
         self.positions = []
         self.colors = ['r', 'g', 'b', 'c', 'm', 'y', 'w']
         self.color_index = 0
         self.pens = []
+        
+        #
+        self.loading = False
+        self.run_csv_image_loader()
 
     def init_controls(self):
-        self.open_button = QPushButton("Open File")
+        self.open_button = QPushButton("Open Experiment")
+        self.open_button.setToolTip("Select a experiment folder to open")
         self.left_panel.addWidget(self.open_button)
+        
+        self.load_data_button = QPushButton("Reload Maping Data")
+        self.load_data_button.setToolTip("Refresh data from file and replot")
+        self.left_panel.addWidget(self.load_data_button)
 
         self.experiment_control = QPushButton("Experiment Control")
+        self.experiment_control.setToolTip("Open the window for experimental control")
         self.left_panel.addWidget(self.experiment_control)
         
-        self.clear_button = QPushButton("Clear Points")
+        self.clear_button = QPushButton("Clear Spectra Points")
+        self.experiment_control.setToolTip("Remove the points from the map and clear spectra")
         self.left_panel.addWidget(self.clear_button)
         
         self.open_button.clicked.connect(self.open_file_browser)
+        self.load_data_button.clicked.connect(self.run_csv_image_loader)
         self.clear_button.clicked.connect(self.clear_plots)
         self.experiment_control.clicked.connect(self.open_experiment_control)
-
+        
     def open_file_browser(self):
         """Callback function to open the filebrowser window"""
-        dialog = FileBrowserDialog(self.vars)
+        dialog = FileBrowserDialog(self.vars,expPath=False)
         dialog.exec()
+        self.run_csv_image_loader()
 
     def open_experiment_control(self):
         """Callback to open the experiment control window"""
-        dialog = ExperimentGUI()
-        dialog.exec()
+        self.Experimental_window = ExperimentGUI(self.vars)
+        self.Experimental_window.show()
+        
+    def run_csv_image_loader(self):
+        
+        if self.loading:
+            pass
+        else:
+            self.load_data_button.setText("Loading ...")
+            self.loading = True
+            
+            self.csv_thread = QThread()
+            self.csv_worker = CSVImageLoaderWorker(self.vars)
 
-    def open_MCL_stage_ctrl(self):
-        """Callback to open the MCL stage control window"""
-        dialog = MCL_Directional_CTRL(self.vars)
-        dialog.exec()
+            self.csv_worker.moveToThread(self.csv_thread)
+            self.csv_thread.started.connect(self.csv_worker.run)
+            
+            self.csv_worker.data_updated.connect(self.update_data)
+            
+            self.csv_worker.finished.connect(self.csv_thread.quit)
+            self.csv_worker.finished.connect(self.loading_finished)
+
+            self.csv_thread.start()
+        
+    def loading_finished(self):
+        self.load_data_button.setText("Reload Maping Data")
+        self.loading = False
 
     def closeEvent(self, event):
         # Make sure to stop the CSV image loader
@@ -411,7 +551,7 @@ class DataAnalysisGUI(QMainWindow):
         #maybe we need this idk
         #self.positions.append((x,y))
         # print the message
-        print("Mouse Double Click Event: " + "pos: (%0.1f, %0.1f)  pixel: (%d, %d)  value: %.3g" % (x, y, i, j, val))
+        #print("Mouse Double Click Event: " + "pos: (%0.1f, %0.1f)  pixel: (%d, %d)  value: %.3g" % (x, y, i, j, val))
         
         # grab the nearest datapoint, plot an arrow to it and plot the spectra in the new panel
         coordinate_pick = np.array((y,x))
@@ -419,7 +559,7 @@ class DataAnalysisGUI(QMainWindow):
         min_index = np.argmin(distances)
         closest_coord = self.coordinates[min_index]
         
-        print(f"the closest point is {closest_coord}, at a distance of {distances[min_index]}")
+        #print(f"the closest point is {closest_coord}, at a distance of {distances[min_index]}")
         
         #Add the scatter point to the figure"""
         self.scatter_2.addPoints(x=[closest_coord[1]],y=[closest_coord[0]])
@@ -567,19 +707,6 @@ class DataAnalysisGUI(QMainWindow):
         # but it works for a very simple use like this. 
         self.img.hoverEvent = self.imageHoverEvent
 
-    def start_csv_image_loader(self):
-        self.csv_thread = QThread()
-        self.csv_worker = CSVImageLoaderWorker(self.vars, poll_interval=1.0)
-
-        self.csv_worker.moveToThread(self.csv_thread)
-        self.csv_thread.started.connect(self.csv_worker.run)
-        
-        self.csv_worker.data_updated.connect(self.update_data)
-        
-        self.csv_worker.finished.connect(self.csv_thread.quit)
-
-        self.csv_thread.start()
-
     def update_data(self,data_dict):
         self.xpos = data_dict['x']
         self.ypos = data_dict['y']
@@ -624,36 +751,94 @@ class DataAnalysisGUI(QMainWindow):
         #change cmaps
         #cmap = pg.colormap.getFromMatplotlib('jet')
         #self.img.setColorMap(cmap)
- 
-class ExperimentGUI(QDialog):
-    def __init__(self):
+
+
+class SpectrumWindow(QWidget):
+    def __init__(self, Variables: Variables, Exp: ExperimentCTRL):
         super().__init__()
+        self.setWindowTitle("Spectrum Viewer")
+        self.resize(700, 500)
         
-        self.vars = Variables()  
-        
-        self.setWindowTitle(self.vars.get_variable("Working Directory"))
+        self.vars = Variables
+        self.Exp = Exp 
 
-        main_layout = QHBoxLayout()
-
-        # Left panel (buttons + controls)
-        self.left_panel = QVBoxLayout()
-        main_layout.addLayout(self.left_panel, 1)
-
-        self.init_controls()
-        
-        # Right panel (image)
-        map_and_spectrum_layout = QVBoxLayout()
-        main_layout.addLayout(map_and_spectrum_layout, 4)
-        self.init_plot_area()
-        map_and_spectrum_layout.addWidget(self.map_widget, 4)
-        
-        # Initialise list of spectra points
-        self.positions = []
         self.colors = ['r', 'g', 'b', 'c', 'm', 'y', 'w']
         self.color_index = 0
-        self.pens = []
+        self.plots = []
+        self.annotations = []
+
+        # Layout
+        layout = QVBoxLayout(self)
+
+        # Plot widget
+        self.plot = pg.PlotWidget()
+        self.plot.setLabel('bottom', 'Wavelength, nm')
+        self.plot.setLabel('left', 'Intensity')
+        self.plot.setTitle("Spectra")
+        self.plot.addLegend()
+        layout.addWidget(self.plot)
+
+        # Button layout
+        btn_layout = QHBoxLayout()
+        self.clear_button = QPushButton("Clear All")
+        self.clear_button.clicked.connect(self.clear_all)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.clear_button)
+        layout.addLayout(btn_layout)
+
+    def run_single(self):
+        print("Running")
+        time.sleep(1)
+
+    def add_line(self, x,y,wavelength,intensity):
         
-        self.setLayout(main_layout)
+
+        color = self.colors[self.color_index % len(self.colors)]
+        self.color_index += 1
+
+        # Plot the line
+        plot_item = self.plot.plot(
+            wavelength,
+            intensity,
+            pen=pg.mkPen(color=color, width=2),
+            name=f"X= {x}, Y = {y}"
+        )
+        self.plots.append(plot_item)
+
+        # Add text annotation
+        #text = pg.TextItem(f"Y = {y}", color=color, anchor=(1, 0))
+        #self.plot.addItem(text)
+        #text.setPos(wavelength[-1], intensity[-1])  # Place at end of line
+        #self.annotations.append(text)
+
+    def clear_all(self):
+        for item in self.plots:
+            self.plot.removeItem(item)
+        self.plots.clear()
+
+        for annotation in self.annotations:
+            self.plot.removeItem(annotation)
+        self.annotations.clear()
+
+        self.color_index = 0
+
+class ExperimentGUI(QWidget):
+    def __init__(self,Variables:Variables):
+        super().__init__()
+        self.setWindowTitle("Experiment Control")
+        
+        
+        self.vars = Variables  
+        self.ExpCTRL = ExperimentCTRL()
+    
+        # Left panel (buttons + controls)
+        self.left_panel = QVBoxLayout()
+        self.init_controls()
+        
+        self.setLayout(self.left_panel)
+        
+        self.single_spectra_windows = {}
+        self.single_spectra_idx = 0
 
     def init_controls(self):
         
@@ -667,9 +852,9 @@ class ExperimentGUI(QDialog):
         row.addWidget(label)
         self.connect_instruments_status = QLabel("Disconnected")
         row.addWidget(self.connect_instruments_status)
-        self.connect_instruments = QPushButton("Connect")
-        self.connect_instruments.setToolTip("Connect to all instruments and set default values")
-        row.addWidget(self.connect_instruments)
+        self.connect_instruments_button = QPushButton("Connect")
+        self.connect_instruments_button.setToolTip("Connect to all instruments and set default values")
+        row.addWidget(self.connect_instruments_button)
         
         self.left_panel.addLayout(row)
 
@@ -741,16 +926,14 @@ class ExperimentGUI(QDialog):
         self.left_panel.addWidget(label)
         
         row = QHBoxLayout()
-        self.single_spectra = QPushButton("Single Spectra")
-        self.single_spectra.setToolTip("Take a single spectrum")
-        row.addWidget(self.single_spectra)
-        self.repeating_spectra = QPushButton("Repeating Spectra")
-        self.repeating_spectra.setToolTip("Continously take spectra")
-        row.addWidget(self.repeating_spectra)
+        self.single_spectra_button = QPushButton("Single Spectra")
+        self.single_spectra_button.setToolTip("Take a single spectrum")
+        row.addWidget(self.single_spectra_button)
+        self.repeating_spectra_button = QPushButton("Repeating Spectra")
+        self.repeating_spectra_button.setToolTip("Continously take spectra")
+        row.addWidget(self.repeating_spectra_button)
         self.left_panel.addLayout(row)
         
-        self.clear_button = QPushButton("Clear Plot")
-        self.left_panel.addWidget(self.clear_button)
         
         self.run_adaptive_sampling = QPushButton("Run Adaptive Sampling")
         self.run_adaptive_sampling.setToolTip("Start Adaptive Sampling Run")
@@ -770,25 +953,57 @@ class ExperimentGUI(QDialog):
         
         
         self.set_folder_button.clicked.connect(self.open_file_browser)
+        self.connect_instruments_button.clicked.connect(self.connect_disconnect_instruments)
+        
         self.set_button.clicked.connect(self.set_variables)
-        self.clear_button.clicked.connect(self.clear_plots)
         self.MCL_button.clicked.connect(self.open_MCL_stage_ctrl)
+        
+        self.single_spectra_button.clicked.connect(self.single_spectra)
 
     def open_file_browser(self):
-        """Callback function to open the filebrowser window"""
-        dialog = FileBrowserDialog(self.vars)
+        """Callback function to open the filebrowser window
+            expPath is just to define which path to save in the variables dict
+        """
+        dialog = FileBrowserDialog(self.vars,expPath=True)
         dialog.exec()
+        
+    def connect_disconnect_instruments(self):
+        
+        if self.ExpCTRL.connected == False:
+            try:
+                self.ExpCTRL.connect(self.vars)
+                self.connect_instruments_button.setText("Disconnect")
+                self.connect_instruments_status.setText("Connected")
+                self.ExpCTRL.connected = True
+            except Exception as e:
+                print(f"[Experiment GUI] Error connecting to instruments: {e}")
+        elif self.ExpCTRL.connected == True:
+            try:
+                self.ExpCTRL.disconnect_instruments()
+                self.connect_instruments_button.setText("Connect")
+                self.connect_instruments_status.setText("Disconnected")
+                self.ExpCTRL.connected = False
+            except Exception as e:
+                print(f"[Experiment GUI] Error disconnecting from instruments: {e}")
 
     def open_MCL_stage_ctrl(self):
         """Callback to open the MCL stage control window"""
-        dialog = MCL_Directional_CTRL(self.vars)
-        dialog.exec()
+        self.MCL_ctrl_window = MCL_Directional_CTRL(self.vars,self.ExpCTRL)
+        self.MCL_ctrl_window.show()
         
     def set_variables(self):
         """Grab all variables from the user inputs and update the vars dict"""
         for name, field in self.input_fields.items():
             self.vars.set_variable(name, field.text())
-        self.accept()
+            
+    def single_spectra(self):
+        """Callback to gather a single spectra and open a window to plot the results"""
+        self.single_spectra_button.setText("Running ...")
+        self.single_spectra_windows[str(self.single_spectra_idx)] = SpectrumWindow(self.vars,self.ExpCTRL)
+        self.single_spectra_windows[str(self.single_spectra_idx)].run_single()
+        self.single_spectra_windows[str(self.single_spectra_idx)].show()
+        self.single_spectra_idx += 1
+        self.single_spectra_button.setText("Single Spectra")
 
     def closeEvent(self, event):
         # Make sure to stop the CSV image loader
@@ -797,34 +1012,7 @@ class ExperimentGUI(QDialog):
             self.csv_thread.quit()
             self.csv_thread.wait()
 
-        event.accept()
-        
-    def clear_plots(self,event):
-        self.scatter_1.setData(x=[],y=[])
-        self.scatter_2.setData(x=[],y=[])
-        self.p2.clear()
-        self.pens = []
-        self.color_index = 0
-        self.table_data =  [
-                    ["X (um)", "Y (um)","Color"],
-                    #[1, 100, 100, 'r']
-                ]
-    
-        self.table.setData(self.table_data)
-
-    def init_plot_area(self):
-
-        self.map_widget = pg.GraphicsLayoutWidget()
-        self.map_widget.setWindowTitle('Data Analysis')
-
-        # Add a line plot for showing spectra
-        self.p1 = self.map_widget.addPlot()
-        #self.p1.setMaximumHeight(250)
-        self.map_widget.resize(1600,900)
-        
-
-    
-
+        event.accept() 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
