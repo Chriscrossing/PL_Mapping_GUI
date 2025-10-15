@@ -111,12 +111,14 @@ Window for controlling the MCL stage manually
 """
 
 class MCL_Directional_CTRL(QWidget):
-    def __init__(self, Variables: Variables, Exp: ExperimentCTRL):
+    def __init__(self, Variables: Variables, MCL_go_xy,MCL_go_z,MCL_get_position):
         super().__init__()
         self.setWindowTitle("MCL Stage Control")
         self.setMinimumWidth(450)
         self.Variables = Variables
-        self.Exp = Exp
+        self.MCL_go_xy = MCL_go_xy
+        self.MCL_go_z = MCL_go_z
+        self.MCL_get_position = MCL_get_position
 
         self.up_button = QPushButton("-x")
         self.down_button = QPushButton("+x")
@@ -197,7 +199,7 @@ class MCL_Directional_CTRL(QWidget):
         self.setLayout(container)
         
         self.goto_button.clicked.connect(self.goto_xyz)
-        self.refresh_position.clicked.connect(self.pol_position)
+        self.refresh_position.clicked.connect(self.ask_for_position)
         self.up_button.clicked.connect(self.step_minux_x)
         self.down_button.clicked.connect(self.step_plus_x)
         self.right_button.clicked.connect(self.step_plus_y)
@@ -205,16 +207,19 @@ class MCL_Directional_CTRL(QWidget):
         self.z_down_button.clicked.connect(self.step_minus_z)
         self.z_up_button.clicked.connect(self.step_plus_z)
 
+        self.current_xpos = 0
+        self.current_ypos = 0
+        self.current_zpos = 0
+        self.position_asked = False
+
+        
     def step_plus_x(self):
         try:
             dx = float(self.x_step.text())
         except Exception as e:
             print(f"[MCL_CTRL] x value error: {e}")
         
-        pos = self.pol_position()
-        
-        self.x_goto.text(str(pos[0]+dx))
-        self.goto_xyz()
+        self.step_xyz(+dx,0,0)
         
     def step_minux_x(self):
         try:
@@ -222,10 +227,7 @@ class MCL_Directional_CTRL(QWidget):
         except Exception as e:
             print(f"[MCL_CTRL] x value error: {e}")
         
-        pos = self.pol_position()
-        
-        self.x_goto.text(str(pos[0]-dx))
-        self.goto_xyz()
+        self.step_xyz(-dx,0,0)
         
     def step_plus_y(self):
         try:
@@ -233,10 +235,7 @@ class MCL_Directional_CTRL(QWidget):
         except Exception as e:
             print(f"[MCL_CTRL] x value error: {e}")
         
-        pos = self.pol_position()
-        
-        self.y_goto.text(str(pos[1]+dy))
-        self.goto_xyz()
+        self.step_xyz(0,+dy,0)
         
     def step_minus_y(self):
         try:
@@ -244,10 +243,7 @@ class MCL_Directional_CTRL(QWidget):
         except Exception as e:
             print(f"[MCL_CTRL] x value error: {e}")
         
-        pos = self.pol_position()
-        
-        self.y_goto.text(str(pos[1]-dy))
-        self.goto_xyz()
+        self.step_xyz(0,-dy,0)
             
     def step_plus_z(self):
         try:
@@ -255,10 +251,7 @@ class MCL_Directional_CTRL(QWidget):
         except Exception as e:
             print(f"[MCL_CTRL] x value error: {e}")
         
-        pos = self.pol_position()
-        
-        self.z_goto.text(str(pos[2]+dz))
-        self.goto_xyz()
+        self.step_xyz(0,0,+dz)
         
     def step_minus_z(self):
         try:
@@ -266,10 +259,27 @@ class MCL_Directional_CTRL(QWidget):
         except Exception as e:
             print(f"[MCL_CTRL] x value error: {e}")
         
-        pos = self.pol_position()
-        
-        self.z_goto.text(str(pos[2]-dz))
-        self.goto_xyz()
+        self.step_xyz(0,0,-dz)
+
+    def step_xyz(self,x,y,z):
+        self.ask_for_position()
+
+        # Wait here until you hear an answer of the current position
+        while self.position_asked != True:
+            time.sleep(self.Variables.get_variable("Wait time (s)"))
+
+        x0 = self.current_xpos
+        y0 = self.current_ypos
+        z0 = self.current_zpos
+
+        if z == 0:
+            self.MCL_go_xy.emit((x0 + x,y0 + y))
+        else:
+            self.MCL_go_xy.emit((x0 + x,y0 + y))
+            self.MCL_go_z.emit(z0+z)
+
+        time.sleep(self.Variables.get_variable("Wait time (s)"))
+
     
     def goto_xyz(self):
         
@@ -287,22 +297,27 @@ class MCL_Directional_CTRL(QWidget):
             print(f"[MCL_CTRL] x value error: {e}")    
             
         
-        self.Exp.piezo.goxy(x,y)
-        self.Exp.piezo.goz(z)
+        self.MCL_go_xy.emit((x,y))
+        self.MCL_go_z.emit(z)
         time.sleep(self.Variables.get_variable("Wait time (s)"))
-        actual_pos = self.Exp.piezo.get_position()
+
+        self.pol_position()
         
-        self.x_pos_label.setText(str(actual_pos[0]))
-        self.y_pos_label.setText(str(actual_pos[1]))
-        self.z_pos_label.setText(str(actual_pos[2]))
-        
-    def pol_position(self):
-        actual_pos = self.Exp.piezo.get_position()
-        
-        self.x_pos_label.setText(str(actual_pos[0]))
-        self.y_pos_label.setText(str(actual_pos[1]))
-        self.z_pos_label.setText(str(actual_pos[2]))
-        return actual_pos
+    def ask_for_position(self):
+        self.position_asked = True
+        self.MCL_get_position.emit()
+
+    
+    def update_position(self,actual_pos):
+        self.position_asked = False
+        self.current_xpos = actual_pos[0]
+        self.current_ypos = actual_pos[1]
+        self.current_zpos = actual_pos[2]
+
+        self.x_pos_label.setText(str(np.round(actual_pos[0],3)))
+        self.y_pos_label.setText(str(np.round(actual_pos[1],3)))
+        self.z_pos_label.setText(str(np.round(actual_pos[2],3)))
+
 """
 Class that runs in a seperate thread watching the spectra file and updating the plot as it's updated
 """
@@ -788,11 +803,15 @@ class SpectrumWindow(QWidget):
 
     def run_single(self):
         print("Running")
-        time.sleep(1)
-
-    def add_line(self, x,y,wavelength,intensity):
         
+        #wav,spect = self.Exp.getSpectra()
+        self.Exp.emit()
 
+        self.add_line(wav,spect)
+
+    def add_line(self, wavelength,intensity):
+        
+        
         color = self.colors[self.color_index % len(self.colors)]
         self.color_index += 1
 
@@ -801,7 +820,7 @@ class SpectrumWindow(QWidget):
             wavelength,
             intensity,
             pen=pg.mkPen(color=color, width=2),
-            name=f"X= {x}, Y = {y}"
+            #name=f"X= {x}, Y = {y}"
         )
         self.plots.append(plot_item)
 
@@ -823,14 +842,24 @@ class SpectrumWindow(QWidget):
         self.color_index = 0
 
 class ExperimentGUI(QWidget):
+    # Signals to run methods in experiment control thread
+    connect_2_instruments = Signal(object)
+    disconnect_instruments = Signal()
+    run_single_scan = Signal()
+    run_continous_scan = Signal(object)
+    run_adaptive_sampling = Signal(object)
+
+    MCL_go_xy = Signal(tuple)
+    MCL_go_z = Signal(float)
+    MCL_get_position = Signal()
+
     def __init__(self,Variables:Variables):
         super().__init__()
         self.setWindowTitle("Experiment Control")
         
         
         self.vars = Variables  
-        self.ExpCTRL = ExperimentCTRL()
-    
+        
         # Left panel (buttons + controls)
         self.left_panel = QVBoxLayout()
         self.init_controls()
@@ -839,6 +868,31 @@ class ExperimentGUI(QWidget):
         
         self.single_spectra_windows = {}
         self.single_spectra_idx = 0
+
+        """Initialise the experiment control thread"""
+
+        self.experiment_thread = QThread()
+        self.experiment_worker = ExperimentCTRL()
+
+        #Move ExperimentCTRL class to a sepearate thread
+        self.experiment_worker.moveToThread(self.experiment_thread)
+
+        """Connect Signals and Slots"""
+        """Slots"""
+        # Once the connection has been made, update the status
+        self.experiment_worker.instruments_connected.connect(self.instruments_are_connected)
+
+        self.experiment_worker.finished.connect(self.experiment_thread.quit)
+
+
+        """Signals"""
+        self.connect_2_instruments.connect(self.experiment_worker.connect)
+        self.disconnect_instruments.connect(self.experiment_worker.disconnect_instruments)
+        #self.run_single_scan.connect(self.experiment_worker.getSpectra)
+
+        self.experiment_thread.start()
+
+        self.instruments_connected = False
 
     def init_controls(self):
         
@@ -968,40 +1022,41 @@ class ExperimentGUI(QWidget):
         dialog.exec()
         
     def connect_disconnect_instruments(self):
-        
-        if self.ExpCTRL.connected == False:
-            try:
-                self.ExpCTRL.connect(self.vars)
-                self.connect_instruments_button.setText("Disconnect")
-                self.connect_instruments_status.setText("Connected")
-                self.ExpCTRL.connected = True
-            except Exception as e:
-                print(f"[Experiment GUI] Error connecting to instruments: {e}")
-        elif self.ExpCTRL.connected == True:
-            try:
-                self.ExpCTRL.disconnect_instruments()
-                self.connect_instruments_button.setText("Connect")
-                self.connect_instruments_status.setText("Disconnected")
-                self.ExpCTRL.connected = False
-            except Exception as e:
-                print(f"[Experiment GUI] Error disconnecting from instruments: {e}")
+        if self.instruments_connected == False:
+            self.connect_instruments_status.setText("Connecting ...")
+            self.connect_2_instruments.emit(self.vars)
+        elif self.instruments_connected == True:
+            self.disconnect_instruments.emit()
+            self.connect_instruments_button.setText("Connect")
+            self.connect_instruments_status.setText("Disconnected")
+            self.instruments_connected = False
+
+    def instruments_are_connected(self):
+        self.connect_instruments_button.setText("Disconnect")
+        self.connect_instruments_status.setText("Connected")
+        self.instruments_connected = True
+        """Now we can initialise the slots"""
+        self.MCL_go_xy.connect(self.experiment_worker.piezo.goxy)
+        self.MCL_go_z.connect(self.experiment_worker.piezo.goz)
+        self.MCL_get_position.connect(self.experiment_worker.piezo.get_position)
 
     def open_MCL_stage_ctrl(self):
         """Callback to open the MCL stage control window"""
-        self.MCL_ctrl_window = MCL_Directional_CTRL(self.vars,self.ExpCTRL)
+        self.MCL_ctrl_window = MCL_Directional_CTRL(self.vars,self.MCL_go_xy,self.MCL_go_z,self.MCL_get_position)
+        self.experiment_worker.piezo.position_updated.connect(self.MCL_ctrl_window.update_position)
         self.MCL_ctrl_window.show()
         
     def set_variables(self):
         """Grab all variables from the user inputs and update the vars dict"""
         for name, field in self.input_fields.items():
-            self.vars.set_variable(name, field.text())
+            self.vars.set_variable(name, float(field.text()))
             
     def single_spectra(self):
         """Callback to gather a single spectra and open a window to plot the results"""
         self.single_spectra_button.setText("Running ...")
-        self.single_spectra_windows[str(self.single_spectra_idx)] = SpectrumWindow(self.vars,self.ExpCTRL)
-        self.single_spectra_windows[str(self.single_spectra_idx)].run_single()
+        self.single_spectra_windows[str(self.single_spectra_idx)] = SpectrumWindow(self.vars,self.run_single_scan)
         self.single_spectra_windows[str(self.single_spectra_idx)].show()
+        self.single_spectra_windows[str(self.single_spectra_idx)].run_single()
         self.single_spectra_idx += 1
         self.single_spectra_button.setText("Single Spectra")
 
@@ -1012,7 +1067,11 @@ class ExperimentGUI(QWidget):
             self.csv_thread.quit()
             self.csv_thread.wait()
 
+        self.disconnect_instruments.emit()
+        #wait until completed
+        self.experiment_thread.quit()
         event.accept() 
+        
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -6,11 +6,13 @@ from time import sleep
 import adaptive
 import csv
 from pathlib import Path
-
-#from pylablib.devices import Andor
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QObject
+import time
+from pylablib.devices import Andor
 
 
 class Madpiezo():
+    position_updated = Signal(tuple)
     """https://github.com/yurmor/mclpiezo"""
     def __init__(self):
 		# provide valid path to Madlib.dll. Madlib.h and Madlib.lib should also be in the same folder
@@ -63,13 +65,17 @@ class Madpiezo():
         if(error_code !=0):
             print("MCL write error = ", error_code)
         return error_code
-    def goxy(self,x_position,y_position):
+    @Slot(tuple)
+    def goxy(self,pos):
+        x_position,y_position = pos
         self.mcl_write(x_position,1)
         self.mcl_write(y_position,2)
+    @Slot(float)
     def goz(self,z_position):
         self.mcl_write(z_position,3)
+    @Slot()
     def get_position(self):
-        return self.mcl_read(1), self.mcl_read(2), self.mcl_read(3)
+        self.position_updated.emit((self.mcl_read(1), self.mcl_read(2), self.mcl_read(3)))
     def mcl_close(self):
         """
         Releases control of all Nano-Drives controlled by this instance of the DLL.
@@ -78,15 +84,21 @@ class Madpiezo():
         mcl_release_all()
 
 
-class ExperimentCTRL:
+class ExperimentCTRL(QObject):
+    finished = Signal()
+    instruments_connected = Signal()
+
     def __init__(self):
-        
+        super().__init__()
         self.connected = False
-        
+    
+    @Slot(object)
     def connect(self,ExpCfg):
         """Connect to Instruments"""
         self.connect2instruments()
         self.initialise_instruments(ExpCfg)
+
+        self.instruments_connected.emit()
         
         
     def connect2instruments(self):
@@ -98,6 +110,8 @@ class ExperimentCTRL:
         print("Connected to CCD")
         self.spec = Andor.ShamrockSpectrograph() # then the spectrometer
         print("Connected to Spectrometer")
+
+    @Slot(object)
     def initialise_instruments(self,ExpCfg):
         self.ExpCfg = ExpCfg
         #self.ExpCfg.calculate()  
@@ -108,27 +122,20 @@ class ExperimentCTRL:
         self.cam.set_exposure(self.ExpCfg._vars['Exposure Time (s)'])
 
         """Set spectrometer variables"""
-        self.spec.set_wavelength(self.ExpCfg._vars['Center Wavelength (nm)']) # set 600nm center wavelength
+        self.spec.set_wavelength(self.ExpCfg._vars['Center Wavelength (nm)']*1e-9) # set 600nm center wavelength
         self.spec.setup_pixels_from_camera(self.cam) # setup camera sensor parameters (number and size of pixels) for wavelength calibration
-        self.spec.set_slit_width("input_side",self.ExpCfg._vars['Slit Width (um)'])
+        self.spec.set_slit_width("input_side",self.ExpCfg._vars['Slit Width (um)']*1e-6)
         
         """Grab the pixel calibrated wavelengths"""
         self.ExpCfg.wavelengths = self.spec.get_calibration()  # return array of wavelength corresponding to each pixel
 
         
-
-    def getSpectra(self,xy):
-
-        x,y = xy
-        
-        """Move the stage to the correct position"""
-        #self.piezo.goz(z)
-        self.piezo.goxy(x,y)
-        sleep(self.ExpCfg._vars['Wait time (s)'])
+    @Slot()
+    def getSpectra(self):
 
         """Take some spectra and calculate the median of them"""
-        spectra = np.zeros((self.ExpCfg._vars['Number of Samples'],len(self.ExpCfg.wavelengths)))
-        for i in range(0,self.ExpCfg._vars['Number of Samples']):
+        spectra = np.zeros((int(self.ExpCfg._vars['Number of Samples']),len(self.ExpCfg.wavelengths)))
+        for i in range(0,int(self.ExpCfg._vars['Number of Samples'])):
             spectra[i,:] = self.cam.snap(timeout=self.cam.get_exposure()*1.3)[0]
             
         spectrum = np.median(spectra,axis=0)
@@ -159,8 +166,8 @@ class ExperimentCTRL:
             sleep(self.ExpCfg._vars['wait_time'])
 
             """Take some spectra and calculate the median of them"""
-            spectra = np.zeros((self.ExpCfg._vars['Number of Samples'],len(self.ExpCfg.wavelengths)))
-            for i in range(0,self.ExpCfg._vars['Number of Samples']):
+            spectra = np.zeros((int(self.ExpCfg._vars['Number of Samples']),len(self.ExpCfg.wavelengths)))
+            for i in range(0,int(self.ExpCfg._vars['Number of Samples'])):
                 spectra[i,:] = self.cam.snap(timeout=self.cam.get_exposure()*1.3)[0]
                 
             spectrum = np.median(spectra,axis=0)
@@ -209,7 +216,7 @@ class ExperimentCTRL:
         self.ExpCfg.saveMetadata()
         #self.runner.live_info()
         
-        
+    @Slot()    
     def disconnect_instruments(self):
         self.piezo.mcl_close()
         self.cam.close()
