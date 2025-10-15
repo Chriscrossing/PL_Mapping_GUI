@@ -12,7 +12,6 @@ from pylablib.devices import Andor
 
 
 class Madpiezo():
-    position_updated = Signal(tuple)
     """https://github.com/yurmor/mclpiezo"""
     def __init__(self):
 		# provide valid path to Madlib.dll. Madlib.h and Madlib.lib should also be in the same folder
@@ -65,17 +64,14 @@ class Madpiezo():
         if(error_code !=0):
             print("MCL write error = ", error_code)
         return error_code
-    @Slot(tuple)
     def goxy(self,pos):
         x_position,y_position = pos
         self.mcl_write(x_position,1)
         self.mcl_write(y_position,2)
-    @Slot(float)
     def goz(self,z_position):
         self.mcl_write(z_position,3)
-    @Slot()
     def get_position(self):
-        self.position_updated.emit((self.mcl_read(1), self.mcl_read(2), self.mcl_read(3)))
+        return (self.mcl_read(1), self.mcl_read(2), self.mcl_read(3))
     def mcl_close(self):
         """
         Releases control of all Nano-Drives controlled by this instance of the DLL.
@@ -85,8 +81,14 @@ class Madpiezo():
 
 
 class ExperimentCTRL(QObject):
+    """Slot Signals"""
     finished = Signal()
     instruments_connected = Signal()
+    MCL_position_updated = Signal(tuple)
+    single_spectra_updated = Signal(object)
+    continous_spectra_updated = Signal(object)
+    new_adaptive_spectra_added = Signal()
+
 
     def __init__(self):
         super().__init__()
@@ -103,7 +105,7 @@ class ExperimentCTRL(QObject):
         
     def connect2instruments(self):
         """Connect to Piezo Stage"""
-        self.piezo = Madpiezo()
+        self.MCL = Madpiezo()
         print("Connected to MCL")
         """Connect to cam and then spectrometer"""
         self.cam = Andor.AndorSDK2Camera(fan_mode="full")  # camera should be connected first
@@ -140,11 +142,9 @@ class ExperimentCTRL(QObject):
             
         spectrum = np.median(spectra,axis=0)
 
-        return self.ExpCfg.wavelengths, spectrum
+        self.single_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
         
-    
-    
-    
+    @Slot()
     def runMapping(self):
 
         def closest(lst, K):
@@ -162,7 +162,7 @@ class ExperimentCTRL(QObject):
 
             """Move the stage to the correct position"""
             #self.piezo.goz(zpos)
-            self.piezo.goxy(x,y)
+            self.MCL_goxy((x,y))
             sleep(self.ExpCfg._vars['wait_time'])
 
             """Take some spectra and calculate the median of them"""
@@ -175,7 +175,7 @@ class ExperimentCTRL(QObject):
             """Here we need to save the spectrum to a file as we go"""
 
             # Append to CSV
-            xyz = np.array(self.piezo.get_position())
+            xyz = np.array(self.MCL_get_position())
             
             with open(self.ExpCfg._vars['Working Directory'] + 'spectra.csv', mode='a',newline='') as file:
                 spamwriter = csv.writer(file, delimiter=',',
@@ -215,11 +215,21 @@ class ExperimentCTRL(QObject):
         
         self.ExpCfg.saveMetadata()
         #self.runner.live_info()
-        
+    
+    @Slot(tuple)
+    def MCL_goxy(self,pos):
+        self.MCL.goxy(pos)
+    
+    @Slot(float)
+    def MCL_goz(self,pos):
+        self.MCL.goz(pos)
+    
+    @Slot()
+    def MCL_get_position(self):
+        self.MCL_position_updated.emit(self.MCL.get_position())
+
     @Slot()    
     def disconnect_instruments(self):
-        self.piezo.mcl_close()
+        self.MCL.mcl_close()
         self.cam.close()
-        self.spec.close()
-        
-        
+        self.spec.close()     

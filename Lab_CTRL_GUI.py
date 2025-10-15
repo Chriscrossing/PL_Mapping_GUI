@@ -769,7 +769,7 @@ class DataAnalysisGUI(QMainWindow):
 
 
 class SpectrumWindow(QWidget):
-    def __init__(self, Variables: Variables, Exp: ExperimentCTRL):
+    def __init__(self, Variables: Variables, Exp):
         super().__init__()
         self.setWindowTitle("Spectrum Viewer")
         self.resize(700, 500)
@@ -845,6 +845,7 @@ class ExperimentGUI(QWidget):
     # Signals to run methods in experiment control thread
     connect_2_instruments = Signal(object)
     disconnect_instruments = Signal()
+    initialise_instruments = Signal(object)
     run_single_scan = Signal()
     run_continous_scan = Signal(object)
     run_adaptive_sampling = Signal(object)
@@ -881,13 +882,14 @@ class ExperimentGUI(QWidget):
         """Slots"""
         # Once the connection has been made, update the status
         self.experiment_worker.instruments_connected.connect(self.instruments_are_connected)
-
         self.experiment_worker.finished.connect(self.experiment_thread.quit)
+        self.experiment_worker.MCL_position_updated.connect(self.MCL_ctrl_window.update_position)
 
 
         """Signals"""
         self.connect_2_instruments.connect(self.experiment_worker.connect)
         self.disconnect_instruments.connect(self.experiment_worker.disconnect_instruments)
+        self.initialise_instruments.connect(self.experiment_worker.initialise_instruments)
         #self.run_single_scan.connect(self.experiment_worker.getSpectra)
 
         self.experiment_thread.start()
@@ -1036,21 +1038,21 @@ class ExperimentGUI(QWidget):
         self.connect_instruments_status.setText("Connected")
         self.instruments_connected = True
         """Now we can initialise the slots"""
-        self.MCL_go_xy.connect(self.experiment_worker.piezo.goxy)
-        self.MCL_go_z.connect(self.experiment_worker.piezo.goz)
-        self.MCL_get_position.connect(self.experiment_worker.piezo.get_position)
+        self.MCL_go_xy.connect(self.experiment_worker.MCL_goxy)
+        self.MCL_go_z.connect(self.experiment_worker.MCL_goz)
+        self.MCL_get_position.connect(self.experiment_worker.MCL_get_position)
 
     def open_MCL_stage_ctrl(self):
         """Callback to open the MCL stage control window"""
         self.MCL_ctrl_window = MCL_Directional_CTRL(self.vars,self.MCL_go_xy,self.MCL_go_z,self.MCL_get_position)
-        self.experiment_worker.piezo.position_updated.connect(self.MCL_ctrl_window.update_position)
         self.MCL_ctrl_window.show()
         
     def set_variables(self):
         """Grab all variables from the user inputs and update the vars dict"""
         for name, field in self.input_fields.items():
             self.vars.set_variable(name, float(field.text()))
-            
+        self.initialise_instruments.emit(self.vars)
+
     def single_spectra(self):
         """Callback to gather a single spectra and open a window to plot the results"""
         self.single_spectra_button.setText("Running ...")
@@ -1062,11 +1064,6 @@ class ExperimentGUI(QWidget):
 
     def closeEvent(self, event):
         # Make sure to stop the CSV image loader
-        if hasattr(self, 'csv_worker'):
-            self.csv_worker.stop()
-            self.csv_thread.quit()
-            self.csv_thread.wait()
-
         self.disconnect_instruments.emit()
         #wait until completed
         self.experiment_thread.quit()
