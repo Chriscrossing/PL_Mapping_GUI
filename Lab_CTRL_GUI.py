@@ -1,3 +1,4 @@
+import wave
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import LinearNDInterpolator
@@ -32,14 +33,14 @@ class Variables:
     def __init__(self):
         self._vars = {
             #Dataviewer Settings
-            "Dataviewer Directory": "Results/2025-09-04/RM_2/",
+            "Dataviewer Directory": "Results/temp/",
             #Experiment Settings
-            "Working Directory": "Results/2025-09-04/RM_2/",
+            "Working Directory": "Results/temp/",
             
             #Spectrometer Camera Settings
             "CCD Temp (C)": -90,
-            "Exposure Time (s)": 10,
-            "Number of Samples": 3,
+            "Exposure Time (s)": 1,
+            "Number of Samples": 1,
             
             #Spectrometer Settings
             "Center Wavelength (nm)": 613.4,
@@ -50,7 +51,7 @@ class Variables:
             "Y Center (um)": 100,
             "dx (um)": 100,
             "dy (um)": 100,
-            "Wait time (s)": 0.05,
+            "Wait time (s)": 0.1,
             "AS Loss Condition": 0.001,
             "AS Wavelength (nm)": 615
 
@@ -74,7 +75,7 @@ class Variables:
         Path(self._vars['Working Directory']).mkdir(parents=True, exist_ok=True)
 
         w = csv.writer(open(self._vars['Working Directory'] + "metadata.csv", "w",newline=''))
-        for key, val in self.V.items():
+        for key, val in self._vars.items():
             w.writerow([key,val])
         np.savetxt(self._vars['Working Directory'] + "wavelenths.csv",self.wavelengths,delimiter=',')
 
@@ -301,7 +302,7 @@ class MCL_Directional_CTRL(QWidget):
         self.MCL_go_z.emit(z)
         time.sleep(self.Variables.get_variable("Wait time (s)"))
 
-        self.pol_position()
+        self.ask_for_position()
         
     def ask_for_position(self):
         self.position_asked = True
@@ -769,6 +770,7 @@ class DataAnalysisGUI(QMainWindow):
 
 
 class SpectrumWindow(QWidget):
+    closed = Signal()
     def __init__(self, Variables: Variables, Exp):
         super().__init__()
         self.setWindowTitle("Spectrum Viewer")
@@ -801,16 +803,54 @@ class SpectrumWindow(QWidget):
         btn_layout.addWidget(self.clear_button)
         layout.addLayout(btn_layout)
 
+        self.cont_plot_first_plot = False
+        self.continous_is_running = False
+        self.stop_continous = False
+
+    def closeEvent(self,event):
+        self.cont_plot_first_plot = False
+        self.continous_is_running = False
+        self.stop_continous = False
+        self.closed.emit()
+        super().closeEvent(event)
+
     def run_single(self):
-        print("Running")
-        
-        #wav,spect = self.Exp.getSpectra()
-        self.Exp.emit()
+        #("Running")
+        """Emit signal to take a spectra"""
+        self.Exp.emit(True)
 
-        self.add_line(wav,spect)
+    def run_continous(self):
+        #print("Continous Scan Starting")
+        """Emit signal to take a spectra"""
+        self.stop_continous = False
+        self.continous_is_running = True
+        self.Exp.emit(False)
 
-    def add_line(self, wavelength,intensity):
+    def update_line(self,data):
+        #print("[Spectrum Widget] Trying to update line",hasattr(self, 'continous_plot_item'))
+        wavelength,intensity = data
+
+        color = self.colors[0]
+
+        if hasattr(self, 'continous_plot_item'):
+            self.continous_plot_item.setData(wavelength,intensity)
+        else:
+            self.continous_plot_item = self.plot.plot(
+                wavelength,
+                intensity,
+                pen=pg.mkPen(color=color, width=2),
+                #name=f"X= {x}, Y = {y}"
+            )
+
+
+        if self.stop_continous == False:
+            self.run_continous()
+        else:
+            self.continous_is_running = False
+
+    def add_line(self, data):
         
+        wavelength,intensity = data
         
         color = self.colors[self.color_index % len(self.colors)]
         self.color_index += 1
@@ -846,9 +886,9 @@ class ExperimentGUI(QWidget):
     connect_2_instruments = Signal(object)
     disconnect_instruments = Signal()
     initialise_instruments = Signal(object)
-    run_single_scan = Signal()
-    run_continous_scan = Signal(object)
-    run_adaptive_sampling = Signal(object)
+    run_scan = Signal(bool)
+    run_adaptive_mapping = Signal()
+    stop_adaptive_mapping = Signal()
 
     MCL_go_xy = Signal(tuple)
     MCL_go_z = Signal(float)
@@ -879,22 +919,29 @@ class ExperimentGUI(QWidget):
         self.experiment_worker.moveToThread(self.experiment_thread)
 
         """Connect Signals and Slots"""
-        """Slots"""
-        # Once the connection has been made, update the status
+        """Slots: to get stuff back from thread"""
+        # 
         self.experiment_worker.instruments_connected.connect(self.instruments_are_connected)
         self.experiment_worker.finished.connect(self.experiment_thread.quit)
-        self.experiment_worker.MCL_position_updated.connect(self.MCL_ctrl_window.update_position)
 
 
-        """Signals"""
+        """Signals to run functions in thread from here"""
         self.connect_2_instruments.connect(self.experiment_worker.connect)
         self.disconnect_instruments.connect(self.experiment_worker.disconnect_instruments)
         self.initialise_instruments.connect(self.experiment_worker.initialise_instruments)
-        #self.run_single_scan.connect(self.experiment_worker.getSpectra)
+        self.run_scan.connect(self.experiment_worker.getSpectra)
+
+        self.run_adaptive_mapping.connect(self.experiment_worker.runAdaptiveMapping)
+        self.stop_adaptive_mapping.connect(self.experiment_worker.stop_adaptive_mapping)
+
 
         self.experiment_thread.start()
 
         self.instruments_connected = False
+        self.single_spectra_window = None
+        self.continous_spectra_window = None
+
+        self.adaptive_mapping_running = False
 
     def init_controls(self):
         
@@ -985,15 +1032,15 @@ class ExperimentGUI(QWidget):
         self.single_spectra_button = QPushButton("Single Spectra")
         self.single_spectra_button.setToolTip("Take a single spectrum")
         row.addWidget(self.single_spectra_button)
-        self.repeating_spectra_button = QPushButton("Repeating Spectra")
-        self.repeating_spectra_button.setToolTip("Continously take spectra")
-        row.addWidget(self.repeating_spectra_button)
+        self.continous_spectra_button = QPushButton("Continous Spectra")
+        self.continous_spectra_button.setToolTip("Continously take spectra")
+        row.addWidget(self.continous_spectra_button)
         self.left_panel.addLayout(row)
         
         
-        self.run_adaptive_sampling = QPushButton("Run Adaptive Sampling")
-        self.run_adaptive_sampling.setToolTip("Start Adaptive Sampling Run")
-        self.left_panel.addWidget(self.run_adaptive_sampling)
+        self.run_adaptive_mapping_button = QPushButton("Run Adaptive Mapping")
+        self.run_adaptive_mapping_button.setToolTip("Start Adaptive Mapping Run")
+        self.left_panel.addWidget(self.run_adaptive_mapping_button)
         
         
         self.n_sampling_pts = QLabel("0 Sampling Pts in 0 Seconds")
@@ -1015,6 +1062,9 @@ class ExperimentGUI(QWidget):
         self.MCL_button.clicked.connect(self.open_MCL_stage_ctrl)
         
         self.single_spectra_button.clicked.connect(self.single_spectra)
+        self.continous_spectra_button.clicked.connect(self.continous_spectra)
+
+        self.run_adaptive_mapping_button.clicked.connect(self.adaptive_mapping)
 
     def open_file_browser(self):
         """Callback function to open the filebrowser window
@@ -1045,6 +1095,7 @@ class ExperimentGUI(QWidget):
     def open_MCL_stage_ctrl(self):
         """Callback to open the MCL stage control window"""
         self.MCL_ctrl_window = MCL_Directional_CTRL(self.vars,self.MCL_go_xy,self.MCL_go_z,self.MCL_get_position)
+        self.experiment_worker.MCL_position_updated.connect(self.MCL_ctrl_window.update_position)
         self.MCL_ctrl_window.show()
         
     def set_variables(self):
@@ -1053,15 +1104,71 @@ class ExperimentGUI(QWidget):
             self.vars.set_variable(name, float(field.text()))
         self.initialise_instruments.emit(self.vars)
 
+    def init_single_plotting_window(self):
+        #print("Making New Window")
+        self.single_spectra_window = SpectrumWindow(self.vars,self.run_scan)
+        self.single_spectra_window.show()
+        self.experiment_worker.single_spectra_updated.connect(self.single_spectra_window.add_line)
+        self.experiment_worker.single_spectra_updated.connect(self.updateSingleSpectraButtonTxt)
+        self.single_spectra_window.run_single()
+
     def single_spectra(self):
         """Callback to gather a single spectra and open a window to plot the results"""
         self.single_spectra_button.setText("Running ...")
-        self.single_spectra_windows[str(self.single_spectra_idx)] = SpectrumWindow(self.vars,self.run_single_scan)
-        self.single_spectra_windows[str(self.single_spectra_idx)].show()
-        self.single_spectra_windows[str(self.single_spectra_idx)].run_single()
-        self.single_spectra_idx += 1
+
+        if self.single_spectra_window is None:
+            self.init_single_plotting_window()
+        elif self.single_spectra_window.isVisible():
+                #print("Running Single")
+                self.single_spectra_window.run_single()
+        else:
+            self.init_single_plotting_window()
+
+    def updateSingleSpectraButtonTxt(self,data):
         self.single_spectra_button.setText("Single Spectra")
 
+    def init_continous_plotting_window(self):
+        self.continous_spectra_window = SpectrumWindow(self.vars,self.run_scan)
+        self.continous_spectra_window.show()
+        self.continous_spectra_window.cont_plot_first_plot = False
+        self.experiment_worker.continous_spectra_updated.connect(self.continous_spectra_window.update_line)
+
+        #self.continous_spectra_window.closeEvent.connect(self.updateContinousSpectraButtonTxt)
+
+    def continous_spectra(self):
+        
+        if self.continous_spectra_window is None:
+            self.init_continous_plotting_window()
+            self.continous_spectra_window.run_continous()
+            self.continous_spectra_button.setText("Running ... (stop)")
+        elif self.continous_spectra_window.isVisible():
+            
+            if self.continous_spectra_window.continous_is_running == True:
+                # if the system is in a continous running state, stop running.
+                self.continous_spectra_window.stop_continous = True
+                self.continous_spectra_button.setText("Continous Spectra")
+            else:
+                # start running 
+                self.continous_spectra_window.run_continous()
+                self.continous_spectra_button.setText("Running ... (stop)")
+            #stop scan here somehow
+        else:
+            # make a window
+            self.init_continous_plotting_window()
+            self.continous_spectra_window.run_continous()
+            self.continous_spectra_button.setText("Running ... (stop)")
+    
+    def adaptive_mapping(self):
+        
+        if self.adaptive_mapping_running == False:
+            self.run_adaptive_mapping_button.setText("Running ... (stop)")
+            self.adaptive_mapping_running = True
+            self.run_adaptive_mapping.emit()
+        else:
+            self.stop_adaptive_mapping.emit()
+            self.run_adaptive_mapping_button.setText("Run Adaptive Mapping")
+        
+    
     def closeEvent(self, event):
         # Make sure to stop the CSV image loader
         self.disconnect_instruments.emit()

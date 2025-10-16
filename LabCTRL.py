@@ -93,6 +93,7 @@ class ExperimentCTRL(QObject):
     def __init__(self):
         super().__init__()
         self.connected = False
+        self.stop_adaptive = False
     
     @Slot(object)
     def connect(self,ExpCfg):
@@ -116,36 +117,48 @@ class ExperimentCTRL(QObject):
     @Slot(object)
     def initialise_instruments(self,ExpCfg):
         self.ExpCfg = ExpCfg
-        #self.ExpCfg.calculate()  
+        #self.ExpCfg.calculate() 
+
+        for k,v in self.ExpCfg.get_all_variables().items():
+            print(k,v) 
 
         """Set camera variables"""
-        self.cam.set_temperature(self.ExpCfg._vars['CCD Temp (C)'])
+        self.cam.set_temperature(float(self.ExpCfg._vars['CCD Temp (C)']))
         self.cam.set_read_mode(0)
-        self.cam.set_exposure(self.ExpCfg._vars['Exposure Time (s)'])
+        self.cam.set_exposure(float(self.ExpCfg._vars['Exposure Time (s)']))
 
         """Set spectrometer variables"""
-        self.spec.set_wavelength(self.ExpCfg._vars['Center Wavelength (nm)']*1e-9) # set 600nm center wavelength
+        self.spec.set_wavelength(float(self.ExpCfg._vars['Center Wavelength (nm)'])*1e-9) # set 600nm center wavelength
         self.spec.setup_pixels_from_camera(self.cam) # setup camera sensor parameters (number and size of pixels) for wavelength calibration
-        self.spec.set_slit_width("input_side",self.ExpCfg._vars['Slit Width (um)']*1e-6)
+        self.spec.set_slit_width("input_side",float(self.ExpCfg._vars['Slit Width (um)'])*1e-6)
         
         """Grab the pixel calibrated wavelengths"""
         self.ExpCfg.wavelengths = self.spec.get_calibration()  # return array of wavelength corresponding to each pixel
 
         
-    @Slot()
-    def getSpectra(self):
+    @Slot(bool)
+    def getSpectra(self,single=True):
+
+        #print("[ExperimentCTRL thread] Running scan", single)
+
+        timeout = self.cam.get_exposure()*1.3
+
+        #timeout should be at min 1s right?
+        if timeout < 1:
+            timeout = 1
 
         """Take some spectra and calculate the median of them"""
         spectra = np.zeros((int(self.ExpCfg._vars['Number of Samples']),len(self.ExpCfg.wavelengths)))
         for i in range(0,int(self.ExpCfg._vars['Number of Samples'])):
-            spectra[i,:] = self.cam.snap(timeout=self.cam.get_exposure()*1.3)[0]
+            spectra[i,:] = self.cam.snap(timeout=timeout)[0]
             
         spectrum = np.median(spectra,axis=0)
-
-        self.single_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
-        
+        if single:
+            self.single_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+        else:
+            self.continous_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
     @Slot()
-    def runMapping(self):
+    def runAdaptiveMapping(self):
 
         def closest(lst, K):
             item = lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
@@ -163,7 +176,7 @@ class ExperimentCTRL(QObject):
             """Move the stage to the correct position"""
             #self.piezo.goz(zpos)
             self.MCL_goxy((x,y))
-            sleep(self.ExpCfg._vars['wait_time'])
+            sleep(self.ExpCfg._vars['Wait time (s)'])
 
             """Take some spectra and calculate the median of them"""
             spectra = np.zeros((int(self.ExpCfg._vars['Number of Samples']),len(self.ExpCfg.wavelengths)))
@@ -175,7 +188,7 @@ class ExperimentCTRL(QObject):
             """Here we need to save the spectrum to a file as we go"""
 
             # Append to CSV
-            xyz = np.array(self.MCL_get_position())
+            xyz = np.array(self.MCL.get_position())
             
             with open(self.ExpCfg._vars['Working Directory'] + 'spectra.csv', mode='a',newline='') as file:
                 spamwriter = csv.writer(file, delimiter=',',
@@ -198,31 +211,41 @@ class ExperimentCTRL(QObject):
 
         """Setup the adaptive learner"""
         
-        x1 = self.ExpCfg.V['X Center (um)'] - self.ExpCfg.V['dx (um)']/2
-        x2 = self.ExpCfg.V['X Center (um)'] + self.ExpCfg.V['dx (um)']/2
-        y1 = self.ExpCfg.V['Y Center (um)'] - self.ExpCfg.V['dy (um)']/2
-        y2 = self.ExpCfg.V['Y Center (um)'] + self.ExpCfg.V['dy (um)']/2
+        x1 = self.ExpCfg._vars['X Center (um)'] - self.ExpCfg._vars['dx (um)']/2
+        x2 = self.ExpCfg._vars['X Center (um)'] + self.ExpCfg._vars['dx (um)']/2
+        y1 = self.ExpCfg._vars['Y Center (um)'] - self.ExpCfg._vars['dy (um)']/2
+        y2 = self.ExpCfg._vars['Y Center (um)'] + self.ExpCfg._vars['dy (um)']/2
         
         self.learner = adaptive.Learner2D(
                 getSpectra, 
                 bounds=[(x1, x2), (y1, y2)]
                 )
 
+        self.ExpCfg.saveMetadata()
+
         self.runner = adaptive.runner.simple(
             self.learner, 
-            loss_goal=self.ExpCfg.V['AS Loss Condition']
+            loss_goal=self.ExpCfg._vars['AS Loss Condition']
             )
         
-        self.ExpCfg.saveMetadata()
+        
         #self.runner.live_info()
+    
+    @Slot()
+    def stop_adaptive_mapping(self):
+        self.runner.stop()
     
     @Slot(tuple)
     def MCL_goxy(self,pos):
         self.MCL.goxy(pos)
+        sleep(self.ExpCfg._vars['Wait time (s)'])
+        self.MCL_get_position()
     
     @Slot(float)
     def MCL_goz(self,pos):
         self.MCL.goz(pos)
+        sleep(self.ExpCfg._vars['Wait time (s)'])
+        self.MCL_get_position()
     
     @Slot()
     def MCL_get_position(self):
