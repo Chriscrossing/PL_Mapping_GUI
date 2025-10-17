@@ -803,7 +803,7 @@ class SpectrumWindow(QWidget):
         if self.stop_continous == False:
             self.run_continous()
         else:
-            self.reset_continous_label()
+            #self.reset_continous_label()
             self.continous_is_running = False
 
     def add_line(self, data):
@@ -1121,6 +1121,7 @@ class ExperimentGUI(QWidget):
             if self.continous_spectra_window.continous_is_running == True:
                 # if the system is in a continous running state, stop running.
                 self.continous_spectra_window.stop_continous = True
+                self.reset_continous_label()
             else:
                 # start running 
                 self.continous_spectra_window.run_continous()
