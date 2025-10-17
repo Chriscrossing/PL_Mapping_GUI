@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QGridLayout, QMainWindow, QDialog, QFileDialog, QPlainTextEdit
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer
 from PySide6.QtGui import QTransform
 import pyqtgraph as pg
 
@@ -127,6 +127,8 @@ class MCL_Directional_CTRL(QWidget):
         self.right_button = QPushButton("+y")
         self.z_up_button = QPushButton("Z+")
         self.z_down_button = QPushButton("Z-")
+        
+
 
         self.x_pos_label = QLabel("X: 0.0")
         self.y_pos_label = QLabel("Y: 0.0")
@@ -157,21 +159,6 @@ class MCL_Directional_CTRL(QWidget):
         self.refresh_position = QPushButton("Refresh")
         pos_layout.addWidget(self.refresh_position)
 
-        
-        step_layout = QHBoxLayout()
-        label = QLabel("X step: ")
-        label.setToolTip("um")
-        step_layout.addWidget(label)
-        step_layout.addWidget(self.x_step)
-        label = QLabel("Y step: ")
-        label.setToolTip("um")
-        step_layout.addWidget(label)
-        step_layout.addWidget(self.y_step)
-        label = QLabel("Z step: ")
-        label.setToolTip("um")
-        step_layout.addWidget(label)
-        step_layout.addWidget(self.z_step)
-        
         absolute_layout = QHBoxLayout()
         label = QLabel("X: ")
         label.setToolTip("um")
@@ -187,14 +174,36 @@ class MCL_Directional_CTRL(QWidget):
         absolute_layout.addWidget(self.z_goto)
         self.goto_button = QPushButton("Go")
         absolute_layout.addWidget(self.goto_button)
+        
+        step_layout = QHBoxLayout()
+        label = QLabel("X step: ")
+        label.setToolTip("um")
+        step_layout.addWidget(label)
+        step_layout.addWidget(self.x_step)
+        label = QLabel("Y step: ")
+        label.setToolTip("um")
+        step_layout.addWidget(label)
+        step_layout.addWidget(self.y_step)
+        label = QLabel("Z step: ")
+        label.setToolTip("um")
+        step_layout.addWidget(label)
+        step_layout.addWidget(self.z_step)
 
         container = QVBoxLayout()
         button_widget = QWidget()
         button_widget.setLayout(grid)
         
+        label = QLabel("Current Stage Position (um): ")
+        container.addWidget(label)
         container.addLayout(pos_layout)
+        label = QLabel("Absolute Stage Positioning (um): ")
+        container.addWidget(label)
         container.addLayout(absolute_layout)
+        label = QLabel("Relative Stage Positioning (um): ")
+        container.addWidget(label)
         container.addWidget(button_widget)
+        label = QLabel("Relative Positioning Steps (um): ")
+        container.addWidget(label)
         container.addLayout(step_layout)
 
         self.setLayout(container)
@@ -628,9 +637,6 @@ class DataAnalysisGUI(QMainWindow):
         self.p1.setTitle("pos (X,Y): (%0.3f, %0.3f) um,  value: %.3g" % (y, x, val))
 
     def init_plot_area(self):
-
-        
-
         # Set a custom color map
         
         self.map_widget = pg.GraphicsLayoutWidget()
@@ -646,8 +652,6 @@ class DataAnalysisGUI(QMainWindow):
         # Item for displaying image data
         self.img = pg.ImageItem()
 
-        
-
         self.p1.addItem(self.img)
 
         # item for adding scatter points
@@ -657,65 +661,18 @@ class DataAnalysisGUI(QMainWindow):
         self.p1.addItem(self.scatter_2)
         self.scatter_1.setZValue(10)
         self.scatter_2.setZValue(11)
-        
-        # Custom ROI for selecting an image region
-        #self.roi = pg.ROI([20, 10], [1, 1])
-        #self.roi.addScaleHandle([0.5, 1], [0.5, 0.5])
-        #self.roi.addScaleHandle([0, 0.5], [0.5, 0.5])
-        #self.p1.addItem(self.roi)
-        #self.roi.setZValue(10)  # make sure ROI is drawn above image
-
-        # Isocurve drawing
-        #self.iso = pg.IsocurveItem(level=0.8, pen='g')
-        #self.iso.setParentItem(self.img)
-        #self.iso.setZValue(5)
 
         # Contrast/color control
         self.hist = pg.HistogramLUTItem()
         self.hist.setImageItem(self.img)
         self.map_widget.addItem(self.hist)
 
-        
-
-        # Draggable line for setting isocurve level
-        #self.isoLine = pg.InfiniteLine(angle=0, movable=True, pen='g')
-        #self.hist.vb.addItem(self.isoLine)
-        #self.hist.vb.setMouseEnabled(y=False) # makes user interaction a little easier
-        #self.isoLine.setValue(1300)
-        #self.isoLine.setZValue(1000) # bring iso line above contrast controls
-        
         # Another plot area for displaying ROI data
         self.map_widget.nextRow()
         self.p2 = self.map_widget.addPlot(colspan=2)
         self.p2.setMaximumHeight(250)
         self.map_widget.resize(800,800)
         
-        #self.line_plt = pg.PlotItem()
-        #self.p2.addItem(self.line_plt)
-        
-        
-        # Generate image data
-        #self.data = np.random.normal(size=(200, 100))
-        #self.data[20:80, 20:80] += 2.
-        #self.data = pg.gaussianFilter(self.data, (3, 3))
-        #self.data += np.random.normal(size=(200, 100)) * 0.1
-        #self.img.setImage(self.data)
-        #self.hist.setLevels(self.data.min(), self.data.max())
-
-        # build isocurves from smoothed data
-        #self.iso.setData(pg.gaussianFilter(self.data, (2, 2)))
-
-        # set position and scale of image
-        #tr = QtGui.QTransform()
-        #self.img.setTransform(tr.scale(0.2, 0.2).translate(-50, 0))
-
-
-        # Connect to callbacks
-        #self.roi.sigRegionChanged.connect(self.updatePlot)
-        #self.updatePlot()
-        #self.isoLine.sigDragged.connect(self.updateIsocurve)
-        
-        #self.map_widget.sigSceneMouseMoved
                 
         self.img.mouseDoubleClickEvent = self.mouseDblClick
         # Monkey-patch the image to use our custom hover function. 
@@ -846,6 +803,7 @@ class SpectrumWindow(QWidget):
         if self.stop_continous == False:
             self.run_continous()
         else:
+            self.reset_continous_label()
             self.continous_is_running = False
 
     def add_line(self, data):
@@ -889,6 +847,7 @@ class ExperimentGUI(QWidget):
     run_scan = Signal(bool)
     run_adaptive_mapping = Signal()
     stop_adaptive_mapping = Signal()
+    ask_for_ccd_temperature = Signal()
 
     MCL_go_xy = Signal(tuple)
     MCL_go_z = Signal(float)
@@ -923,6 +882,7 @@ class ExperimentGUI(QWidget):
         # 
         self.experiment_worker.instruments_connected.connect(self.instruments_are_connected)
         self.experiment_worker.finished.connect(self.experiment_thread.quit)
+        self.experiment_worker.CCD_temp_updated.connect(self.temperature_recieved)
 
 
         """Signals to run functions in thread from here"""
@@ -933,6 +893,7 @@ class ExperimentGUI(QWidget):
 
         self.run_adaptive_mapping.connect(self.experiment_worker.runAdaptiveMapping)
         self.stop_adaptive_mapping.connect(self.experiment_worker.stop_adaptive_mapping)
+        self.ask_for_ccd_temperature.connect(self.experiment_worker.get_CCD_temperature)
 
 
         self.experiment_thread.start()
@@ -1049,7 +1010,7 @@ class ExperimentGUI(QWidget):
         row = QHBoxLayout()
         label = QLabel("Current CCD Temp:")
         row.addWidget(label)
-        self.current_CCD_temp_label = QLabel("20 C")
+        self.current_CCD_temp_label = QLabel("20 ℃")
         row.addWidget(self.current_CCD_temp_label)
         row.addSpacing(10)
         self.left_panel.addLayout(row)
@@ -1091,6 +1052,20 @@ class ExperimentGUI(QWidget):
         self.MCL_go_xy.connect(self.experiment_worker.MCL_goxy)
         self.MCL_go_z.connect(self.experiment_worker.MCL_goz)
         self.MCL_get_position.connect(self.experiment_worker.MCL_get_position)
+        
+        """Start monitoring the CCD temperature"""
+        self.start_CCD_temperature_timer()
+        
+    def start_CCD_temperature_timer(self):
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.poll_CCD_tempearture)
+        self.timer.start(2000)  # Interval in milliseconds
+        
+    def poll_CCD_tempearture(self):
+        self.ask_for_ccd_temperature.emit()
+    
+    def temperature_recieved(self,temp):
+        self.current_CCD_temp_label.setText(str(int(temp)) + " ℃") 
 
     def open_MCL_stage_ctrl(self):
         """Callback to open the MCL stage control window"""
@@ -1146,7 +1121,6 @@ class ExperimentGUI(QWidget):
             if self.continous_spectra_window.continous_is_running == True:
                 # if the system is in a continous running state, stop running.
                 self.continous_spectra_window.stop_continous = True
-                self.continous_spectra_button.setText("Continous Spectra")
             else:
                 # start running 
                 self.continous_spectra_window.run_continous()
@@ -1157,6 +1131,9 @@ class ExperimentGUI(QWidget):
             self.init_continous_plotting_window()
             self.continous_spectra_window.run_continous()
             self.continous_spectra_button.setText("Running ... (stop)")
+            
+    def reset_continous_label(self):
+        self.continous_spectra_button.setText("Continous Spectra")
     
     def adaptive_mapping(self):
         
@@ -1170,8 +1147,10 @@ class ExperimentGUI(QWidget):
         
     
     def closeEvent(self, event):
+        print("This Event Happens")
         # Make sure to stop the CSV image loader
         self.disconnect_instruments.emit()
+        time.sleep(1) #cheating here for now
         #wait until completed
         self.experiment_thread.quit()
         event.accept() 

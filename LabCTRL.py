@@ -8,6 +8,7 @@ import csv
 from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QObject
 import time
+
 from pylablib.devices import Andor
 
 
@@ -88,7 +89,7 @@ class ExperimentCTRL(QObject):
     single_spectra_updated = Signal(object)
     continous_spectra_updated = Signal(object)
     new_adaptive_spectra_added = Signal()
-
+    CCD_temp_updated = Signal(float)
 
     def __init__(self):
         super().__init__()
@@ -100,6 +101,7 @@ class ExperimentCTRL(QObject):
         """Connect to Instruments"""
         self.connect2instruments()
         self.initialise_instruments(ExpCfg)
+        
 
         self.instruments_connected.emit()
         
@@ -232,6 +234,11 @@ class ExperimentCTRL(QObject):
         #self.runner.live_info()
     
     @Slot()
+    def get_CCD_temperature(self):
+        temp = self.cam.get_temperature()
+        self.CCD_temp_updated.emit(temp)
+    
+    @Slot()
     def stop_adaptive_mapping(self):
         self.runner.stop()
     
@@ -253,6 +260,7 @@ class ExperimentCTRL(QObject):
 
     @Slot()    
     def disconnect_instruments(self):
+        print("Disconnecting_instruments")
         self.MCL.mcl_close()
         self.cam.close()
         self.spec.close()     
