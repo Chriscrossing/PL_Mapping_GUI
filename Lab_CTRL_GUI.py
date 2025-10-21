@@ -754,15 +754,47 @@ class SpectrumWindow(QWidget):
 
         # Button layout
         btn_layout = QHBoxLayout()
+        
+        # Save Curves
+        self.save_curves_button = QPushButton("Save")
+        self.save_curves_button.clicked.connect(self.save_curves)
+
+        # Clear Curves
         self.clear_button = QPushButton("Clear All")
         self.clear_button.clicked.connect(self.clear_all)
+        
         btn_layout.addStretch()
+        btn_layout.addWidget(self.save_curves_button)
         btn_layout.addWidget(self.clear_button)
         layout.addLayout(btn_layout)
+
+        # Monkey-patch the image to use our custom hover function. 
+        # This is generally discouraged (you should subclass ImageItem instead),
+        # but it works for a very simple use like this. 
+        #self.plot.hoverEvent = self.imageHoverEvent
 
         self.cont_plot_first_plot = False
         self.continous_is_running = False
         self.stop_continous = False
+
+    def save_curves(self):
+        working_dir = self.vars.get_variable("Working Directory")
+
+        """The curves will be saved to seperate csv files incase they have different wavelength ranges"""
+        # make a new folder:
+        try:
+            Path(working_dir + "/Single_Spectra").mkdir(parents=True, exist_ok=False)
+            curve_idx = 0
+            if len(self.plots) > 0:
+                for curve in self.plots:
+                    x = curve.x
+                    y = curve.y
+                    np.savetxt(working_dir + "/Single_Spectra/Curve_" + str(curve_idx), (x,y))
+                    curve_idx += 1
+
+        except:
+            print("ERR, the directory already exists")
+
 
     def closeEvent(self,event):
         self.cont_plot_first_plot = False
@@ -811,22 +843,19 @@ class SpectrumWindow(QWidget):
         wavelength,intensity = data
         
         color = self.colors[self.color_index % len(self.colors)]
-        self.color_index += 1
+        
 
         # Plot the line
         plot_item = self.plot.plot(
             wavelength,
             intensity,
             pen=pg.mkPen(color=color, width=2),
-            #name=f"X= {x}, Y = {y}"
+            name=f"Curve {self.color_index}"
         )
+        # Add legend
+        plot_item.addLegend()
         self.plots.append(plot_item)
-
-        # Add text annotation
-        #text = pg.TextItem(f"Y = {y}", color=color, anchor=(1, 0))
-        #self.plot.addItem(text)
-        #text.setPos(wavelength[-1], intensity[-1])  # Place at end of line
-        #self.annotations.append(text)
+        self.color_index += 1
 
     def clear_all(self):
         for item in self.plots:
@@ -838,6 +867,17 @@ class SpectrumWindow(QWidget):
         self.annotations.clear()
 
         self.color_index = 0
+
+    def imageHoverEvent(self,event):
+        """Show the position, pixel, and value under the mouse cursor.
+        """
+        if event.isExit():
+            self.p1.setTitle("")
+            return
+        pos = event.pos()
+        ppos = self.img.mapToParent(pos)
+        x, y = ppos.x(), ppos.y()
+        self.p1.setTitle("Pos: %.3g" % (x, yvalvalvalval))
 
 class ExperimentGUI(QWidget):
     # Signals to run methods in experiment control thread
@@ -1004,8 +1044,8 @@ class ExperimentGUI(QWidget):
         self.left_panel.addWidget(self.run_adaptive_mapping_button)
         
         
-        self.n_sampling_pts = QLabel("0 Sampling Pts in 0 Seconds")
-        self.left_panel.addWidget(self.n_sampling_pts)
+        self.Experiment_Status_Label = QLabel("Status:")
+        self.left_panel.addWidget(self.Experiment_Status_Label)
         
         row = QHBoxLayout()
         label = QLabel("Current CCD Temp:")
@@ -1100,6 +1140,7 @@ class ExperimentGUI(QWidget):
             self.init_single_plotting_window()
 
     def updateSingleSpectraButtonTxt(self,data):
+        """When scan is complete, run this"""
         self.single_spectra_button.setText("Single Spectra")
 
     def init_continous_plotting_window(self):
