@@ -923,7 +923,7 @@ class ExperimentGUI(QWidget):
         self.experiment_worker.instruments_connected.connect(self.instruments_are_connected)
         self.experiment_worker.finished.connect(self.experiment_thread.quit)
         self.experiment_worker.CCD_temp_updated.connect(self.temperature_recieved)
-
+        self.experiment_worker.new_adaptive_spectra_added.connect(self.update_adaptive_status)
 
         """Signals to run functions in thread from here"""
         self.connect_2_instruments.connect(self.experiment_worker.connect)
@@ -1187,6 +1187,8 @@ class ExperimentGUI(QWidget):
             self.stop_adaptive_mapping.emit()
             self.run_adaptive_mapping_button.setText("Run Adaptive Mapping")
         
+    def update_adaptive_status(self,obj):
+        print("In Main Thread: ", obj)
     
     def closeEvent(self, event):
         print("This Event Happens")
