@@ -1,4 +1,3 @@
-from matplotlib.pylab import rand
 import numpy as np
 from scipy import integrate
 from ctypes import cdll, c_int, c_uint, c_double
@@ -7,7 +6,7 @@ from time import sleep
 import adaptive
 import csv
 from pathlib import Path
-from PySide6.QtCore import Qt, QThread, Signal, Slot, QObject
+from PySide6.QtCore import Qt, QThread, Signal, Slot, QObject, QTimer
 import time
 
 #from pylablib.devices import Andor
@@ -85,11 +84,14 @@ class Madpiezo():
 class ExperimentCTRL(QObject):
     """Slot Signals"""
     finished = Signal()
+    logger_info = Signal(str)
+    logger_err = Signal(str)
     instruments_connected = Signal()
     MCL_position_updated = Signal(tuple)
     single_spectra_updated = Signal(object)
     continous_spectra_updated = Signal(object)
-    new_adaptive_spectra_added = Signal(object)
+    new_adaptive_spectra_added = Signal()
+    adaptive_sampling_done = Signal()
     CCD_temp_updated = Signal(float)
 
     def __init__(self):
@@ -102,20 +104,34 @@ class ExperimentCTRL(QObject):
         """Connect to Instruments"""
         self.connect2instruments()
         self.initialise_instruments(ExpCfg)
-        
-
         self.instruments_connected.emit()
         
         
     def connect2instruments(self):
         """Connect to Piezo Stage"""
-        self.MCL = Madpiezo()
-        print("Connected to MCL")
-        """Connect to cam and then spectrometer"""
-        self.cam = Andor.AndorSDK2Camera(fan_mode="full")  # camera should be connected first
-        print("Connected to CCD")
-        self.spec = Andor.ShamrockSpectrograph() # then the spectrometer
-        print("Connected to Spectrometer")
+        try:
+            self.MCL = Madpiezo()
+            self.logger_info.emit("[LabCTRL] MCL Connected")
+        except Exception as e:
+            err_string = f"[LabCTRL] MCL connect error: {e}"
+            self.logger_err.emit(err_string)
+        
+        """Connect to andor CCD"""
+        try:
+            self.cam = Andor.AndorSDK2Camera(fan_mode="full")  # camera should be connected first
+            self.logger_info.emit("[LabCTRL] Andor CCD Connected")
+        except Exception as e:
+            err_string = f"[LabCTRL] Andor CCD connect error: {e}"
+            self.logger_err.emit(err_string)
+        
+        """Connect to spectrometer"""
+        try:
+            self.spec = Andor.ShamrockSpectrograph() # then the spectrometer
+            self.logger_info.emit("[LabCTRL] Andor Spectrometer Connected")
+        except Exception as e:
+            err_string = f"[LabCTRL] Andor Spectrometer connect error: {e}"
+            self.logger_err.emit(err_string)
+        
 
     @Slot(object)
     def initialise_instruments(self,ExpCfg):
@@ -123,7 +139,7 @@ class ExperimentCTRL(QObject):
         #self.ExpCfg.calculate() 
 
         for k,v in self.ExpCfg.get_all_variables().items():
-            print(k,v) 
+            self.logger_info.emit(str(k) + ": " + str(v)) 
 
         """Set camera variables"""
         self.cam.set_temperature(float(self.ExpCfg._vars['CCD Temp (C)']))
@@ -138,6 +154,7 @@ class ExperimentCTRL(QObject):
         """Grab the pixel calibrated wavelengths"""
         self.ExpCfg.wavelengths = self.spec.get_calibration()  # return array of wavelength corresponding to each pixel
 
+        self.logger_info.emit("[LabCTRL] Initialised instruments")
         
     @Slot(bool)
     def getSpectra(self,single=True):
@@ -157,9 +174,106 @@ class ExperimentCTRL(QObject):
             
         spectrum = np.median(spectra,axis=0)
         if single:
+            self.logger_info.emit("[LabCTRL] Single Spectra Updated")
             self.single_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
         else:
+            self.logger_info.emit("[LabCTRL] Continous Spectra Updated")
             self.continous_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+    
+    @Slot()
+    def runAdaptiveMapping(self):
+		
+        self.setupAdaptiveSampling()
+
+        self.adaptive_pt_idx = 1
+
+        self.runner_timer = QTimer()
+        self.runner_timer.setInterval(250)
+        self.runner_timer.timeout.connect(self.stepAdaptive)
+        self.runner_timer.start()
+    
+    def setupAdaptiveSampling(self):
+        def closest(lst, K):
+            item = lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
+            return np.where(lst == item)[0][0]
+		
+        def getSpectra(xy):
+            x,y = xy
+            
+            """z-axis focus interpolation"""
+            #zmax,xmax = self.ExpCfg.V['z_x_max']
+            #zmin,xmin = self.ExpCfg.V['z_x_min']
+
+            #zpos = np.interp(x,[xmin,xmax],[zmin,zmax])
+
+            """Move the stage to the correct position"""
+            #self.piezo.goz(zpos)
+            self.MCL_goxy((x,y))
+            sleep(self.ExpCfg._vars['Wait time (s)'])
+
+            """Take some spectra and calculate the median of them"""
+            spectra = np.zeros((int(self.ExpCfg._vars['Number of Samples']),len(self.ExpCfg.wavelengths)))
+            for i in range(0,int(self.ExpCfg._vars['Number of Samples'])):
+                spectra[i,:] = self.cam.snap(timeout=self.cam.get_exposure()*1.3)[0]
+                
+            spectrum = np.median(spectra,axis=0)
+
+            """Here we need to save the spectrum to a file as we go"""
+
+            # Append to CSV
+            xyz = np.array(self.MCL.get_position())
+            
+            with open(self.ExpCfg._vars['Working Directory'] + 'spectra.csv', mode='a',newline='') as file:
+                spamwriter = csv.writer(file, delimiter=',',
+                            quotechar='|', quoting=csv.QUOTE_MINIMAL)
+                spamwriter.writerow(np.append(xyz,spectrum))
+
+            
+            """Integrate the spectrum^2 and use this with the adaptive function"""
+            #min_idx = 600
+            #max_idx = -500
+            #energy = integrate.simpson(spectrum[min_idx:max_idx]) #-1049667.9166666665
+            #print(xy,energy)
+
+            idx = closest(self.ExpCfg.wavelengths,self.ExpCfg._vars['AS Wavelength (nm)'])
+
+            print(xy,spectrum[idx])
+
+            return spectrum[idx]
+        
+
+        """Setup the adaptive learner"""
+        
+        x1 = self.ExpCfg._vars['X Center (um)'] - self.ExpCfg._vars['dx (um)']/2
+        x2 = self.ExpCfg._vars['X Center (um)'] + self.ExpCfg._vars['dx (um)']/2
+        y1 = self.ExpCfg._vars['Y Center (um)'] - self.ExpCfg._vars['dy (um)']/2
+        y2 = self.ExpCfg._vars['Y Center (um)'] + self.ExpCfg._vars['dy (um)']/2
+        
+        self.learner = adaptive.Learner2D(
+                getSpectra, 
+                bounds=[(x1, x2), (y1, y2)]
+                )
+
+        self.ExpCfg.saveMetadata()
+
+    @Slot()
+    def stepAdaptive(self):
+
+        self.logger_info("[LabCTRL] Stepping Adaptive" + str(self.adaptive_pt_idx) )
+
+        self.runner = adaptive.runner.simple(
+                    self.learner,
+                    npoints_goal=self.adaptive_pt_idx
+                    )
+        self.adaptive_pt_idx += 1
+
+        loss = self.learner.loss()
+        if loss < self.ExpCfg._vars['AS Loss Condition']:
+            self.stop_adaptive_mapping()
+
+        self.logger_info("[LabVTRL] Loss: " + str(loss))
+
+
     @Slot()
     def runAdaptiveMapping(self):
 
@@ -211,19 +325,6 @@ class ExperimentCTRL(QObject):
 
             return spectrum[idx]
         
-        
-        def getSpectra_dummy(xy):
-            
-            time.sleep(1)
-            
-            random_intensity = np.random.rand()
-            
-            #print(random_intensity)
-            self.new_adaptive_spectra_added.emit(np.array([random_intensity]))
-            if self.stop_adaptive == True:
-                pass
-            else:
-                return random_intensity        
 
         """Setup the adaptive learner"""
         
@@ -233,20 +334,13 @@ class ExperimentCTRL(QObject):
         y2 = self.ExpCfg._vars['Y Center (um)'] + self.ExpCfg._vars['dy (um)']/2
         
         self.learner = adaptive.Learner2D(
-                getSpectra_dummy, 
+                getSpectra, 
                 bounds=[(x1, x2), (y1, y2)]
                 )
 
-        #self.ExpCfg.saveMetadata()
+        self.ExpCfg.saveMetadata()
 
-        self.runner = adaptive.runner.simple(
-            self.learner, 
-            loss_goal=self.ExpCfg._vars['AS Loss Condition']
-            )
-        
-        
-        #self.runner.live_info()
-    
+            
     @Slot()
     def get_CCD_temperature(self):
         temp = self.cam.get_temperature()
@@ -254,7 +348,9 @@ class ExperimentCTRL(QObject):
     
     @Slot()
     def stop_adaptive_mapping(self):
-        self.stop_adaptive = True
+        self.logger_info("[LabCTRL Thread] Trying to stop")
+        self.runner_timer.stop()
+        self.adaptive_sampling_done.emit()
     
     @Slot(tuple)
     def MCL_goxy(self,pos):
