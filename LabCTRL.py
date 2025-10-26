@@ -1,3 +1,4 @@
+from matplotlib.pylab import rand
 import numpy as np
 from scipy import integrate
 from ctypes import cdll, c_int, c_uint, c_double
@@ -88,7 +89,7 @@ class ExperimentCTRL(QObject):
     MCL_position_updated = Signal(tuple)
     single_spectra_updated = Signal(object)
     continous_spectra_updated = Signal(object)
-    new_adaptive_spectra_added = Signal()
+    new_adaptive_spectra_added = Signal(object)
     CCD_temp_updated = Signal(float)
 
     def __init__(self):
@@ -210,6 +211,19 @@ class ExperimentCTRL(QObject):
 
             return spectrum[idx]
         
+        
+        def getSpectra_dummy(xy):
+            
+            time.sleep(1)
+            
+            random_intensity = np.random.rand()
+            
+            #print(random_intensity)
+            self.new_adaptive_spectra_added.emit(np.array([random_intensity]))
+            if self.stop_adaptive == True:
+                pass
+            else:
+                return random_intensity        
 
         """Setup the adaptive learner"""
         
@@ -219,11 +233,11 @@ class ExperimentCTRL(QObject):
         y2 = self.ExpCfg._vars['Y Center (um)'] + self.ExpCfg._vars['dy (um)']/2
         
         self.learner = adaptive.Learner2D(
-                getSpectra, 
+                getSpectra_dummy, 
                 bounds=[(x1, x2), (y1, y2)]
                 )
 
-        self.ExpCfg.saveMetadata()
+        #self.ExpCfg.saveMetadata()
 
         self.runner = adaptive.runner.simple(
             self.learner, 
@@ -240,7 +254,7 @@ class ExperimentCTRL(QObject):
     
     @Slot()
     def stop_adaptive_mapping(self):
-        self.runner.stop()
+        self.stop_adaptive = True
     
     @Slot(tuple)
     def MCL_goxy(self,pos):
