@@ -6,14 +6,18 @@ from scipy.interpolate import LinearNDInterpolator
 import sys, csv, os, time
 from PySide6.QtWidgets import (
     QApplication, QWidget, QPushButton, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QGridLayout, QMainWindow, QDialog, QFileDialog, QPlainTextEdit
+    QLabel, QLineEdit, QGridLayout, QMainWindow, QDialog, QFileDialog, QPlainTextEdit,QTextEdit
 )
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer
+from PySide6.QtCore import QThread, Signal, QObject, QTimer,Slot
+from PySide6.QtGui import QTextCursor
 from PySide6.QtGui import QTransform
 import pyqtgraph as pg
 
-from LabCTRL import ExperimentCTRL
+from LabCTRL_debug import ExperimentCTRL
 from pathlib import Path
+
+import logging
+
 
 """Global Qt Options"""
 pg.setConfigOptions(imageAxisOrder='row-major')
@@ -24,6 +28,90 @@ def closest(lst, K):
     item = lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
     return np.where(lst == item)[0][0]
 
+"""
+Class for showing the log window
+"""
+
+class LogSignal(QObject):
+    """Signal object to safely emit log messages across threads."""
+    message = Signal(str, int)
+
+
+class QtHandler(logging.Handler):
+    """A logging handler that emits records to a Qt signal."""
+    def __init__(self, signal):
+        super().__init__()
+        self.log_signal = signal
+
+    def emit(self, record):
+        msg = self.format(record)
+        self.log_signal.message.emit(msg, record.levelno)
+
+class LoggingWidget(QWidget):
+    """
+    A QWidget that displays log messages in real-time.
+    Connects to Python's logging module via a QtHandler.
+    """
+
+    def __init__(self, parent=None, log_level=logging.DEBUG):
+        super().__init__(parent)
+
+        self.setWindowTitle("Logging Console")
+
+        # Layout
+        layout = QVBoxLayout(self)
+        self.text_edit = QPlainTextEdit(self)
+        self.text_edit.setReadOnly(True)
+        self.text_edit.setLineWrapMode(QPlainTextEdit.NoWrap)
+        layout.addWidget(self.text_edit)
+
+        # Optional clear button
+        button_layout = QHBoxLayout()
+        clear_button = QPushButton("Clear")
+        clear_button.clicked.connect(self.text_edit.clear)
+        button_layout.addStretch()
+        button_layout.addWidget(clear_button)
+        layout.addLayout(button_layout)
+
+        # Setup log signal and handler
+        self.log_signal = LogSignal()
+        self.log_signal.message.connect(self.append_message)
+
+        self.handler = QtHandler(self.log_signal)
+        self.handler.setLevel(log_level)
+        formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+        self.handler.setFormatter(formatter)
+
+        # Register handler globally
+        logging.getLogger().addHandler(self.handler)
+        logging.getLogger().setLevel(log_level)
+
+        # Change window size
+        self.resize(1000,200)
+
+    def append_message(self, message, level):
+        """Append a formatted message to the log window with color."""
+        color = self._get_color(level)
+        self.text_edit.appendHtml(f'<span style="color:{color}">{message}</span>')
+        self.text_edit.verticalScrollBar().setValue(
+            self.text_edit.verticalScrollBar().maximum()
+        )
+
+    def _get_color(self, level):
+        """Return a color name for each log level."""
+        if level >= logging.ERROR:
+            return "red"
+        elif level >= logging.WARNING:
+            return "orange"
+        elif level >= logging.INFO:
+            return "black"
+        else:
+            return "gray"
+
+    def closeEvent(self, event):
+        """Ensure handler is removed when widget closes."""
+        logging.getLogger().removeHandler(self.handler)
+        super().closeEvent(event)
 
 """
 Class for storing Variables
@@ -88,23 +176,26 @@ class FileBrowserDialog(QFileDialog):
     def __init__(self,variables: Variables,expPath):
         super().__init__()
         self.variables = variables
-        self.setWindowTitle("Select a Folder")
         self.resize(600,400)
         
         # Set the file dialog to select directories only
         self.setFileMode(QFileDialog.Directory)
-        self.setOption(QFileDialog.ShowDirsOnly, True)
+        #self.setOption(QFileDialog.ShowDirsOnly, True)
 
         if expPath:
+            self.setWindowTitle("Select Where to Save Mapping")
             self.fileSelected.connect(self.set_experiment_Path)
         else:
+            self.setWindowTitle("Open Mapping Folder")
             self.fileSelected.connect(self.set_dataviewer_Path)
         
     def set_dataviewer_Path(self,path):
-        self.variables.set_variable("Dataviewer Directory",path + "\\")
+        print("Dataviewer Directory: ", path)
+        self.variables.set_variable("Dataviewer Directory",path)
         
     def set_experiment_Path(self,path):
-        self.variables.set_variable("Working Directory",path + "\\")
+        print("Experiment Directory: ", path)
+        self.variables.set_variable("Working Directory",path)
 
 
 """
@@ -112,10 +203,11 @@ Window for controlling the MCL stage manually
 """
 
 class MCL_Directional_CTRL(QWidget):
-    def __init__(self, Variables: Variables, MCL_go_xy,MCL_go_z,MCL_get_position):
+    def __init__(self, logger, Variables: Variables, MCL_go_xy,MCL_go_z,MCL_get_position):
         super().__init__()
         self.setWindowTitle("MCL Stage Control")
         self.setMinimumWidth(450)
+        self.logger = logger
         self.Variables = Variables
         self.MCL_go_xy = MCL_go_xy
         self.MCL_go_z = MCL_go_z
@@ -227,7 +319,7 @@ class MCL_Directional_CTRL(QWidget):
         try:
             dx = float(self.x_step.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")
+            self.logger.error(f"[MCL_CTRL] x value error: {e}")
         
         self.step_xyz(+dx,0,0)
         
@@ -235,7 +327,7 @@ class MCL_Directional_CTRL(QWidget):
         try:
             dx = float(self.x_step.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")
+            self.logger.error(f"[MCL_CTRL] x value error: {e}")
         
         self.step_xyz(-dx,0,0)
         
@@ -243,7 +335,7 @@ class MCL_Directional_CTRL(QWidget):
         try:
             dy = float(self.y_step.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")
+            self.logger.error(f"[MCL_CTRL] y value error: {e}")
         
         self.step_xyz(0,+dy,0)
         
@@ -251,7 +343,7 @@ class MCL_Directional_CTRL(QWidget):
         try:
             dy = float(self.y_step.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")
+            self.logger.error(f"[MCL_CTRL] y value error: {e}")
         
         self.step_xyz(0,-dy,0)
             
@@ -259,7 +351,7 @@ class MCL_Directional_CTRL(QWidget):
         try:
             dz = float(self.z_step.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")
+            self.logger.error(f"[MCL_CTRL] z value error: {e}")
         
         self.step_xyz(0,0,+dz)
         
@@ -267,7 +359,7 @@ class MCL_Directional_CTRL(QWidget):
         try:
             dz = float(self.z_step.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")
+            self.logger.error(f"[MCL_CTRL] z value error: {e}")
         
         self.step_xyz(0,0,-dz)
 
@@ -296,17 +388,20 @@ class MCL_Directional_CTRL(QWidget):
         try:
             x = float(self.x_goto.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")
+            self.logger.error(f"[MCL_CTRL] x value error: {e}")
+
         try:
             y = float(self.y_goto.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")
+            self.logger.error(f"[MCL_CTRL] y value error: {e}")
+
         try:
             z = float(self.z_goto.text())
         except Exception as e:
-            print(f"[MCL_CTRL] x value error: {e}")    
+            self.logger.error(f"[MCL_CTRL] z value error: {e}")
+   
             
-        
+        self.logger.info("going to position: " + str((x,y,z)))
         self.MCL_go_xy.emit((x,y))
         self.MCL_go_z.emit(z)
         time.sleep(self.Variables.get_variable("Wait time (s)"))
@@ -336,16 +431,23 @@ class CSVImageLoaderWorker(QObject):
     data_updated = Signal(dict)
     finished = Signal()
 
-    def __init__(self, vars: Variables):
+    def __init__(self,logger, vars: Variables):
         super().__init__()
         self.vars = vars
+        self.logger = logger
         self._running = True
         self.last_modified_time = None
 
     def load_file(self,workingDir):
 
-        data = np.genfromtxt(workingDir + "/spectra.csv", delimiter=",")
-        wavelengths = np.genfromtxt(workingDir + "/wavelenths.csv")*1e9 # load and convert to nm
+        self.logger.info("Loading Map File")
+
+        spectra_path = os.path.join(workingDir, "spectra.csv")
+        wavelengths_path = os.path.join(workingDir, "wavelenths.csv")
+
+
+        data = np.genfromtxt(spectra_path, delimiter=",")
+        wavelengths = np.genfromtxt(wavelengths_path)*1e9 # load and convert to nm
         
         x = np.array(data[:,0],dtype=float)
         y = np.array(data[:,1],dtype=float)
@@ -412,13 +514,12 @@ class CSVImageLoaderWorker(QObject):
     def run(self):
         try:
             working_dir = self.vars.get_variable("Dataviewer Directory")
-            file_path = os.path.join(working_dir, "spectra.csv")
-            if os.path.exists(file_path):
-                data_dict = self.load_file(working_dir)    
-                self.data_updated.emit(data_dict)
+            data_dict = self.load_file(working_dir)    
+            self.data_updated.emit(data_dict)
                 
         except Exception as e:
             print(f"[CSV Loader] Error loading CSV: {e}")
+            self.logger.error(f"[CSV Loader] Error loading CSV: {e}")
         self.finished.emit()
     
     def stop(self):
@@ -432,6 +533,17 @@ class DataAnalysisGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Data Viewer")
+
+        # Initialise logging window
+        self.logger_widget = LoggingWidget()
+        self.logger_widget.show()
+
+        self.logger = logging.getLogger()
+
+        #self.logger.debug("Debug message")
+        #self.logger.info("Information message")
+        #self.logger.warning("Warning message")
+        #self.logger.error("Error message")
 
         self.vars = Variables()  
 
@@ -483,7 +595,7 @@ class DataAnalysisGUI(QMainWindow):
         self.open_button.setToolTip("Select a experiment folder to open")
         self.left_panel.addWidget(self.open_button)
         
-        self.load_data_button = QPushButton("Reload Maping Data")
+        self.load_data_button = QPushButton("Reload Mapping Data")
         self.load_data_button.setToolTip("Refresh data from file and replot")
         self.left_panel.addWidget(self.load_data_button)
 
@@ -508,7 +620,7 @@ class DataAnalysisGUI(QMainWindow):
 
     def open_experiment_control(self):
         """Callback to open the experiment control window"""
-        self.Experimental_window = ExperimentGUI(self.vars)
+        self.Experimental_window = ExperimentGUI(self.logger,self.vars)
         self.Experimental_window.show()
         
     def run_csv_image_loader(self):
@@ -516,11 +628,12 @@ class DataAnalysisGUI(QMainWindow):
         if self.loading:
             pass
         else:
+            self.logger.info("Running the CSV loader thread")
             self.load_data_button.setText("Loading ...")
             self.loading = True
             
             self.csv_thread = QThread()
-            self.csv_worker = CSVImageLoaderWorker(self.vars)
+            self.csv_worker = CSVImageLoaderWorker(self.logger,self.vars)
 
             self.csv_worker.moveToThread(self.csv_thread)
             self.csv_thread.started.connect(self.csv_worker.run)
@@ -681,6 +794,7 @@ class DataAnalysisGUI(QMainWindow):
         self.img.hoverEvent = self.imageHoverEvent
 
     def update_data(self,data_dict):
+        self.logger.info("Update Map Triggered")
         self.xpos = data_dict['x']
         self.ypos = data_dict['y']
         self.wavelengths = data_dict['wavelengths']
@@ -728,8 +842,13 @@ class DataAnalysisGUI(QMainWindow):
 
 class SpectrumWindow(QWidget):
     closed = Signal()
-    def __init__(self, Variables: Variables, Exp):
+
+    cont_scan_finished = Signal()
+
+    def __init__(self, logger, Variables: Variables, Exp):
         super().__init__()
+        
+        self.logger = logger
         self.setWindowTitle("Spectrum Viewer")
         self.resize(700, 500)
         
@@ -757,7 +876,7 @@ class SpectrumWindow(QWidget):
         
         # Save Curves
         self.save_curves_button = QPushButton("Save")
-        self.save_curves_button.clicked.connect(self.save_curves)
+        self.save_curves_button.clicked.connect(self.begin_save_curves)
 
         # Clear Curves
         self.clear_button = QPushButton("Clear All")
@@ -768,6 +887,8 @@ class SpectrumWindow(QWidget):
         btn_layout.addWidget(self.clear_button)
         layout.addLayout(btn_layout)
 
+        
+
         # Monkey-patch the image to use our custom hover function. 
         # This is generally discouraged (you should subclass ImageItem instead),
         # but it works for a very simple use like this. 
@@ -775,47 +896,75 @@ class SpectrumWindow(QWidget):
 
         self.cont_plot_first_plot = False
         self.continous_is_running = False
-        self.stop_continous = False
 
-    def save_curves(self):
-        working_dir = self.vars.get_variable("Working Directory")
+    def begin_save_curves(self):
+        
+        # If it's not running, then lets ask the user to choose an experiment folder
+        dialog = QFileDialog(self, "Select Folder To Save Spectra")
+        dialog.setFileMode(QFileDialog.Directory)
+        # Then once a folder is selected, start the mapping (if no folder is selected then nothing happens)
+        dialog.fileSelected.connect(self.save_curves)
+        dialog.exec()
 
+    def save_curves(self,directory):
+        self.logger.debug("Selected Folder: " + str(directory))
         """The curves will be saved to seperate csv files incase they have different wavelength ranges"""
         # make a new folder:
         try:
-            Path(working_dir + "/Single_Spectra").mkdir(parents=True, exist_ok=False)
-            curve_idx = 0
-            if len(self.plots) > 0:
-                for curve in self.plots:
-                    x = curve.x
-                    y = curve.y
-                    np.savetxt(working_dir + "/Single_Spectra/Curve_" + str(curve_idx), (x,y))
-                    curve_idx += 1
+            Path(directory).mkdir(parents=True, exist_ok=True)
 
-        except:
-            print("ERR, the directory already exists")
+            if len(self.plots) > 0:
+                for i in range(0,len(self.plots)):
+                    curve = self.plots[i]
+                    x, y = curve.getData()
+                    np.savetxt(directory + "/Curve_" + str(i) + ".csv", np.transpose([x,y]),header="Wavelengths (nm), Counts", delimiter=',')
+
+            self.logger.info("[mainGUI] Curves have been saved successfully")
+
+        except Exception as e:
+            err_string = f"[MainGUI] Saving Issue: {e}"
+            self.logger.error(err_string)
 
 
     def closeEvent(self,event):
         self.cont_plot_first_plot = False
         self.continous_is_running = False
-        self.stop_continous = False
         self.closed.emit()
         super().closeEvent(event)
 
     def run_single(self):
         #("Running")
         """Emit signal to take a spectra"""
+        self.logger.info("Running Single Scan")
         self.Exp.emit(True)
 
     def run_continous(self):
         #print("Continous Scan Starting")
         """Emit signal to take a spectra"""
-        self.stop_continous = False
+        self.logger.info("Starting Continous Scan QTimer")
+        self.continous_timer = QTimer()
+        self.continous_timer.setInterval(250)
+        self.continous_timer.timeout.connect(self.take_continous_spectra)
+        self.continous_timer.start()
         self.continous_is_running = True
+
+    def take_continous_spectra(self):
         self.Exp.emit(False)
 
+    def stop_continous(self):
+        self.logger.info("[GUI] Trying to stop continous run")
+        self.continous_timer.stop()
+        self.continous_is_running = False
+        # next, emit a signal to change the label of the button
+        self.logger.debug("[DEBUG] Emitting cont_scan_finished signal")
+        self.cont_scan_finished.emit()
+        
+
     def update_line(self,data):
+
+        
+        self.logger.debug("Line updated")
+
         #print("[Spectrum Widget] Trying to update line",hasattr(self, 'continous_plot_item'))
         wavelength,intensity = data
 
@@ -830,13 +979,6 @@ class SpectrumWindow(QWidget):
                 pen=pg.mkPen(color=color, width=2),
                 #name=f"X= {x}, Y = {y}"
             )
-
-
-        if self.stop_continous == False:
-            self.run_continous()
-        else:
-            #self.reset_continous_label()
-            self.continous_is_running = False
 
     def add_line(self, data):
         
@@ -853,7 +995,6 @@ class SpectrumWindow(QWidget):
             name=f"Curve {self.color_index}"
         )
         # Add legend
-        plot_item.addLegend()
         self.plots.append(plot_item)
         self.color_index += 1
 
@@ -877,7 +1018,7 @@ class SpectrumWindow(QWidget):
         pos = event.pos()
         ppos = self.img.mapToParent(pos)
         x, y = ppos.x(), ppos.y()
-        self.p1.setTitle("Pos: %.3g" % (x, yvalvalvalval))
+        self.p1.setTitle("Pos: %.3g" % (x, y))
 
 class ExperimentGUI(QWidget):
     # Signals to run methods in experiment control thread
@@ -893,11 +1034,11 @@ class ExperimentGUI(QWidget):
     MCL_go_z = Signal(float)
     MCL_get_position = Signal()
 
-    def __init__(self,Variables:Variables):
+    def __init__(self,logger,Variables:Variables):
         super().__init__()
         self.setWindowTitle("Experiment Control")
         
-        
+        self.logger = logger
         self.vars = Variables  
         
         # Left panel (buttons + controls)
@@ -923,7 +1064,10 @@ class ExperimentGUI(QWidget):
         self.experiment_worker.instruments_connected.connect(self.instruments_are_connected)
         self.experiment_worker.finished.connect(self.experiment_thread.quit)
         self.experiment_worker.CCD_temp_updated.connect(self.temperature_recieved)
+        self.experiment_worker.adaptive_sampling_done.connect(self.adaptive_sampling_finished)
 
+        self.experiment_worker.logger_info.connect(self.logger.info)
+        self.experiment_worker.logger_err.connect(self.logger.error)
 
         """Signals to run functions in thread from here"""
         self.connect_2_instruments.connect(self.experiment_worker.connect)
@@ -945,12 +1089,7 @@ class ExperimentGUI(QWidget):
         self.adaptive_mapping_running = False
 
     def init_controls(self):
-        
-        
-        self.set_folder_button = QPushButton("Set Experiment Folder")
-        self.set_folder_button.setToolTip("Choose where to save the experiment")
-        self.left_panel.addWidget(self.set_folder_button)
-        
+               
         row = QHBoxLayout()
         label = QLabel("Instrument Status:")
         row.addWidget(label)
@@ -963,7 +1102,6 @@ class ExperimentGUI(QWidget):
         self.left_panel.addLayout(row)
 
         self.MCL_button = QPushButton("Manual Stage Control")
-        self.set_folder_button.setToolTip("Open a new window to manually control the MCL Stage")
         self.left_panel.addWidget(self.MCL_button)
         
         label = QLabel("Experiment Variables")
@@ -1056,7 +1194,6 @@ class ExperimentGUI(QWidget):
         self.left_panel.addLayout(row)
         
         
-        self.set_folder_button.clicked.connect(self.open_file_browser)
         self.connect_instruments_button.clicked.connect(self.connect_disconnect_instruments)
         
         self.set_button.clicked.connect(self.set_variables)
@@ -1066,13 +1203,6 @@ class ExperimentGUI(QWidget):
         self.continous_spectra_button.clicked.connect(self.continous_spectra)
 
         self.run_adaptive_mapping_button.clicked.connect(self.adaptive_mapping)
-
-    def open_file_browser(self):
-        """Callback function to open the filebrowser window
-            expPath is just to define which path to save in the variables dict
-        """
-        dialog = FileBrowserDialog(self.vars,expPath=True)
-        dialog.exec()
         
     def connect_disconnect_instruments(self):
         if self.instruments_connected == False:
@@ -1109,7 +1239,7 @@ class ExperimentGUI(QWidget):
 
     def open_MCL_stage_ctrl(self):
         """Callback to open the MCL stage control window"""
-        self.MCL_ctrl_window = MCL_Directional_CTRL(self.vars,self.MCL_go_xy,self.MCL_go_z,self.MCL_get_position)
+        self.MCL_ctrl_window = MCL_Directional_CTRL(self.logger,self.vars,self.MCL_go_xy,self.MCL_go_z,self.MCL_get_position)
         self.experiment_worker.MCL_position_updated.connect(self.MCL_ctrl_window.update_position)
         self.MCL_ctrl_window.show()
         
@@ -1121,11 +1251,11 @@ class ExperimentGUI(QWidget):
 
     def init_single_plotting_window(self):
         #print("Making New Window")
-        self.single_spectra_window = SpectrumWindow(self.vars,self.run_scan)
+        self.single_spectra_window = SpectrumWindow(self.logger,self.vars,self.run_scan)
         self.single_spectra_window.show()
         self.experiment_worker.single_spectra_updated.connect(self.single_spectra_window.add_line)
         self.experiment_worker.single_spectra_updated.connect(self.updateSingleSpectraButtonTxt)
-        self.single_spectra_window.run_single()
+        
 
     def single_spectra(self):
         """Callback to gather a single spectra and open a window to plot the results"""
@@ -1133,8 +1263,14 @@ class ExperimentGUI(QWidget):
 
         if self.single_spectra_window is None:
             self.init_single_plotting_window()
+            self.single_spectra_window.run_single()
         elif self.single_spectra_window.isVisible():
                 #print("Running Single")
+
+                # Update Experiment Variables 
+                self.set_variables()
+
+                # Run Single Scan
                 self.single_spectra_window.run_single()
         else:
             self.init_single_plotting_window()
@@ -1144,52 +1280,74 @@ class ExperimentGUI(QWidget):
         self.single_spectra_button.setText("Single Spectra")
 
     def init_continous_plotting_window(self):
-        self.continous_spectra_window = SpectrumWindow(self.vars,self.run_scan)
-        self.continous_spectra_window.show()
+        self.continous_spectra_window = SpectrumWindow(self.logger,self.vars,self.run_scan)
         self.continous_spectra_window.cont_plot_first_plot = False
         self.experiment_worker.continous_spectra_updated.connect(self.continous_spectra_window.update_line)
+        self.continous_spectra_window.cont_scan_finished.connect(self.reset_continous_label)
+        self.continous_spectra_window.show()
 
-        #self.continous_spectra_window.closeEvent.connect(self.updateContinousSpectraButtonTxt)
 
     def continous_spectra(self):
-        
-        if self.continous_spectra_window is None:
+        self.logger.debug("Continous Button Pressed")
+
+        """Check if the window is open already, if not, make a new window"""
+        if not self.continous_spectra_window or not self.continous_spectra_window.isVisible():
+            self.logger.debug("Creating Continous Spectra Window")
             self.init_continous_plotting_window()
-            self.continous_spectra_window.run_continous()
-            self.continous_spectra_button.setText("Running ... (stop)")
-        elif self.continous_spectra_window.isVisible():
-            
-            if self.continous_spectra_window.continous_is_running == True:
-                # if the system is in a continous running state, stop running.
-                self.continous_spectra_window.stop_continous = True
-                self.reset_continous_label()
-            else:
-                # start running 
-                self.continous_spectra_window.run_continous()
-                self.continous_spectra_button.setText("Running ... (stop)")
-            #stop scan here somehow
+
+        if self.continous_spectra_window.continous_is_running:
+            """If the continous timer is running, then stop it"""
+            self.logger.debug("Stopping continuous spectra...")
+            self.continous_spectra_window.stop_continous()
+            self.continous_spectra_button.setEnabled(False)
         else:
-            # make a window
-            self.init_continous_plotting_window()
+            """Else start it again"""
+            self.logger.debug("Starting continuous spectra...")
+            
+            # Update experimnet variables
+            self.set_variables()
+
+            # Start Continous
             self.continous_spectra_window.run_continous()
             self.continous_spectra_button.setText("Running ... (stop)")
-            
+
     def reset_continous_label(self):
+        """Once the Continous Timer has been stopped we can re-enable the continous button"""
+        self.logger.debug("[DEBUG] reset_continous_label() CALLED")
         self.continous_spectra_button.setText("Continous Spectra")
+        self.continous_spectra_window.continous_is_running = False
+        self.continous_spectra_button.setEnabled(True)
     
     def adaptive_mapping(self):
-        
+
+        """Check if adaptive mapping is running first"""
         if self.adaptive_mapping_running == False:
-            self.run_adaptive_mapping_button.setText("Running ... (stop)")
-            self.adaptive_mapping_running = True
-            self.run_adaptive_mapping.emit()
+            # If it's not running, then lets ask the user to choose an experiment folder
+            dialog = FileBrowserDialog(self.vars,expPath=True)
+            # Then once a folder is selected, start the mapping (if no folder is selected then nothing happens)
+            dialog.fileSelected.connect(self.on_adaptive_mapping_folder_selected)
+            dialog.exec()
+
         else:
+            self.logger.info("[GUI Thread] Trying to stop adaptive thread")
             self.stop_adaptive_mapping.emit()
-            self.run_adaptive_mapping_button.setText("Run Adaptive Mapping")
+            self.run_adaptive_mapping_button.setEnabled(False)
+
+    def on_adaptive_mapping_folder_selected(self):
+        self.run_adaptive_mapping_button.setText("Running ... (stop)")
+        # Next the instruments should be initalised with the parameters in the gui (removing the need to click set variables)
+        self.set_variables()
+        # Then we can set away the adaptive mapping
+        self.adaptive_mapping_running = True
+        self.run_adaptive_mapping.emit()
         
-    
+    def adaptive_sampling_finished(self):
+        self.run_adaptive_mapping_button.setText("Run Adaptive Mapping")
+        self.adaptive_mapping_running = False
+        self.run_adaptive_mapping_button.setEnabled(True)
+
     def closeEvent(self, event):
-        print("This Event Happens")
+        self.logger.info("[GUI Thread] Experimental Window Closed")
         # Make sure to stop the CSV image loader
         self.disconnect_instruments.emit()
         time.sleep(1) #cheating here for now

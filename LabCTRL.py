@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QObject
 import time
 
-from pylablib.devices import Andor
+#from pylablib.devices import Andor
 
 
 class Madpiezo():
