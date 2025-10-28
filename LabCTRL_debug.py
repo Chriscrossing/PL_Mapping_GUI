@@ -144,9 +144,10 @@ class ExperimentCTRL(QObject):
                 spamwriter = csv.writer(file, delimiter=',',
                             quotechar='|', quoting=csv.QUOTE_MINIMAL)
                 spamwriter.writerow(np.append(xyz,spectrum))
-
+            logging_string = "X: " +str(np.round(x,3)) + " Y: " +str(np.round(y,3))  +   " Intensity: " + str(intensity)
+            self.logger_info.emit(logging_string)
             
-            time.sleep(10)
+            time.sleep(1)
 
             return intensity
         

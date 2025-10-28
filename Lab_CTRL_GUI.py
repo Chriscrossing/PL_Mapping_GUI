@@ -11,9 +11,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, QObject, QTimer,Slot
 from PySide6.QtGui import QTextCursor
 from PySide6.QtGui import QTransform
+from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt
 import pyqtgraph as pg
 
-from LabCTRL_debug import ExperimentCTRL
+from LabCTRL import ExperimentCTRL
 from pathlib import Path
 
 import logging
@@ -168,6 +170,50 @@ class Variables:
             w.writerow([key,val])
         np.savetxt(self._vars['Working Directory'] + "wavelenths.csv",self.wavelengths,delimiter=',')
 
+"""
+Window to confirm file ovewrite
+"""
+
+class OverwriteWarningDialog(QDialog):
+    def __init__(self, filename: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Overwrite File?")
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setFixedSize(350, 150)
+        self.setWindowIcon(QIcon.fromTheme("dialog-warning"))
+
+        # Message
+        message = QLabel(
+            f"The file <b>{filename}</b> already exists.<br>"
+            "Do you want to overwrite it?"
+        )
+        message.setWordWrap(True)
+        message.setAlignment(Qt.AlignCenter)
+
+        # Buttons
+        self.overwrite_button = QPushButton("Overwrite")
+        self.cancel_button = QPushButton("Choose Another Folder")
+
+        self.overwrite_button.clicked.connect(self.accept)
+        self.cancel_button.clicked.connect(self.reject)
+
+        # Layout
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        button_layout.addWidget(self.overwrite_button)
+        button_layout.addWidget(self.cancel_button)
+        button_layout.addStretch()
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(message)
+        layout.addLayout(button_layout)
+
+    @staticmethod
+    def confirm_overwrite(filename: str, parent=None) -> bool:
+        """Show dialog and return True if user confirms overwrite."""
+        dialog = OverwriteWarningDialog(filename, parent)
+        result = dialog.exec()
+        return result == QDialog.Accepted
 
 """
 Window dialogue for selecting directories for opening data
@@ -191,12 +237,12 @@ class FileBrowserDialog(QFileDialog):
             self.fileSelected.connect(self.set_dataviewer_Path)
         
     def set_dataviewer_Path(self,path):
-        print("Dataviewer Directory: ", path)
-        self.variables.set_variable("Dataviewer Directory",path)
+        print("Dataviewer Directory: ", path + "/")
+        self.variables.set_variable("Dataviewer Directory",path + "/")
         
     def set_experiment_Path(self,path):
         print("Experiment Directory: ", path)
-        self.variables.set_variable("Working Directory",path)
+        self.variables.set_variable("Working Directory",path + "/")
 
 
 """
@@ -533,7 +579,6 @@ Main Window, For DataAnalysis
 class DataAnalysisGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Data Viewer")
 
         # Initialise logging window
         self.logger_widget = LoggingWidget()
@@ -547,6 +592,7 @@ class DataAnalysisGUI(QMainWindow):
         #self.logger.error("Error message")
 
         self.vars = Variables()  
+        self.setWindowTitle("Data Viewer: " + self.vars.get_variable("Dataviewer Directory"))
 
         # Main layout
         central_widget = QWidget()
@@ -617,6 +663,7 @@ class DataAnalysisGUI(QMainWindow):
         """Callback function to open the filebrowser window"""
         dialog = FileBrowserDialog(self.vars,expPath=False)
         dialog.exec()
+        self.setWindowTitle("Data Viewer: " + self.vars.get_variable("Dataviewer Directory"))
         self.run_csv_image_loader()
 
     def open_experiment_control(self):
@@ -911,16 +958,32 @@ class SpectrumWindow(QWidget):
         self.logger.debug("Selected Folder: " + str(directory))
         """The curves will be saved to seperate csv files incase they have different wavelength ranges"""
         # make a new folder:
+        """Curve0 will aways be there so check for that I guess"""
+        file2check = directory + "/Curve_0.csv"
+        
         try:
-            Path(directory).mkdir(parents=True, exist_ok=True)
-
-            if len(self.plots) > 0:
-                for i in range(0,len(self.plots)):
-                    curve = self.plots[i]
-                    x, y = curve.getData()
-                    np.savetxt(directory + "/Curve_" + str(i) + ".csv", np.transpose([x,y]),header="Wavelengths (nm), Counts", delimiter=',')
-
-            self.logger.info("[mainGUI] Curves have been saved successfully")
+        
+            if os.path.isfile(file2check):
+                # if it does, give the user a choice on whether or not to overwrite it!
+                if OverwriteWarningDialog.confirm_overwrite(file2check):
+                    self.logger.info("User chose to overwrite file")
+                    #user chose to overwrite the file so we will delete it
+                    if len(self.plots) > 0:
+                        for i in range(0,len(self.plots)):
+                            curve = self.plots[i]
+                            x, y = curve.getData()
+                            np.savetxt(directory + "/Curve_" + str(i) + ".csv", np.transpose([x,y]),header="Wavelengths (nm), Counts", delimiter=',')
+                    self.logger.info("[mainGUI] Curves have been saved successfully")
+                else:
+                    self.logger.info("User chose not to ovewrite, starting again from file browser")
+                    self.begin_save_curves()
+            else:
+                if len(self.plots) > 0:
+                    for i in range(0,len(self.plots)):
+                        curve = self.plots[i]
+                        x, y = curve.getData()
+                        np.savetxt(directory + "/Curve_" + str(i) + ".csv", np.transpose([x,y]),header="Wavelengths (nm), Counts", delimiter=',')
+                self.logger.info("[mainGUI] Curves have been saved successfully")
 
         except Exception as e:
             err_string = f"[MainGUI] Saving Issue: {e}"
@@ -953,11 +1016,11 @@ class SpectrumWindow(QWidget):
         self.Exp.emit(False)
 
     def stop_continous(self):
-        self.logger.info("[GUI] Trying to stop continous run")
+        self.logger.debug("Trying to stop continous run")
         self.continous_timer.stop()
         self.continous_is_running = False
         # next, emit a signal to change the label of the button
-        self.logger.debug("[DEBUG] Emitting cont_scan_finished signal")
+        self.logger.debug("Emitting cont_scan_finished signal")
         self.cont_scan_finished.emit()
         
 
@@ -1299,8 +1362,9 @@ class ExperimentGUI(QWidget):
         if self.continous_spectra_window.continous_is_running:
             """If the continous timer is running, then stop it"""
             self.logger.debug("Stopping continuous spectra...")
-            self.continous_spectra_window.stop_continous()
             self.continous_spectra_button.setEnabled(False)
+            self.logger.debug("Continous spectra button has been set to DISABLED")
+            self.continous_spectra_window.stop_continous()
         else:
             """Else start it again"""
             self.logger.debug("Starting continuous spectra...")
@@ -1314,10 +1378,11 @@ class ExperimentGUI(QWidget):
 
     def reset_continous_label(self):
         """Once the Continous Timer has been stopped we can re-enable the continous button"""
-        self.logger.debug("[DEBUG] reset_continous_label() CALLED")
+        self.logger.debug("Reset_continous_label() CALLED")
         self.continous_spectra_button.setText("Continous Spectra")
         self.continous_spectra_window.continous_is_running = False
         self.continous_spectra_button.setEnabled(True)
+        self.logger.debug("Continous spectra button has been set to ENABLED")
     
     def adaptive_mapping(self):
 
@@ -1335,6 +1400,26 @@ class ExperimentGUI(QWidget):
             self.run_adaptive_mapping_button.setEnabled(False)
 
     def on_adaptive_mapping_folder_selected(self):
+        
+        file2check = self.vars.get_variable("Working Directory") + "spectra.csv"
+        
+        # Check if a spectra.csv file exists in this directory
+        if os.path.isfile(file2check):
+            # if it does, give the user a choice on whether or not to overwrite it!
+            if OverwriteWarningDialog.confirm_overwrite(file2check):
+                self.logger.info("User chose to overwrite file")
+                #user chose to overwrite the file so we will delete it
+                os.remove(file2check) 
+                self.start_adaptive_mapping()
+            else:
+                self.logger.info("User chose not to ovewrite, starting again from file browser")
+                self.adaptive_mapping()
+        else:
+            self.start_adaptive_mapping()
+    
+    
+    def start_adaptive_mapping(self):
+        
         self.run_adaptive_mapping_button.setText("Running ... (stop)")
         # Next the instruments should be initalised with the parameters in the gui (removing the need to click set variables)
         self.set_variables()
