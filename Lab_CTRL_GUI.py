@@ -994,40 +994,36 @@ class SpectrumWindow(QWidget):
         self.cont_plot_first_plot = False
         self.continous_is_running = False
         self.closed.emit()
+        try:
+            self.continous_timer.stop()
+        except:
+            pass
         super().closeEvent(event)
 
     def run_single(self):
         #("Running")
         """Emit signal to take a spectra"""
         self.logger.info("Running Single Scan")
-        self.Exp.emit(True)
+        self.Exp[0].emit()
 
     def run_continous(self):
         #print("Continous Scan Starting")
         """Emit signal to take a spectra"""
-        self.logger.info("Starting Continous Scan QTimer")
-        self.continous_timer = QTimer()
-        self.continous_timer.setInterval(250)
-        self.continous_timer.timeout.connect(self.take_continous_spectra)
-        self.continous_timer.start()
+        # Fire signal to startContinousSpectra in the LabCTRL thread 
+        self.Exp[0].emit()
         self.continous_is_running = True
 
-    def take_continous_spectra(self):
-        self.Exp.emit(False)
 
     def stop_continous(self):
-        self.logger.debug("Trying to stop continous run")
-        self.continous_timer.stop()
-        self.continous_is_running = False
-        # next, emit a signal to change the label of the button
-        self.logger.debug("Emitting cont_scan_finished signal")
-        self.cont_scan_finished.emit()
-        
+        self.logger.debug("[GUI] Emitting Stop Continous")
+        self.Exp[1].emit()        
+
+    def continous_is_running_callback(self):
+        self.continous_is_running = True
 
     def update_line(self,data):
 
-        
-        self.logger.debug("Line updated")
+        #self.logger.debug("Continous Line updated")
 
         #print("[Spectrum Widget] Trying to update line",hasattr(self, 'continous_plot_item'))
         wavelength,intensity = data
@@ -1089,7 +1085,9 @@ class ExperimentGUI(QWidget):
     connect_2_instruments = Signal(object)
     disconnect_instruments = Signal()
     initialise_instruments = Signal(object)
-    run_scan = Signal(bool)
+    run_single = Signal()
+    run_continous = Signal()
+    stop_continous = Signal()
     run_adaptive_mapping = Signal()
     stop_adaptive_mapping = Signal()
     ask_for_ccd_temperature = Signal()
@@ -1137,7 +1135,9 @@ class ExperimentGUI(QWidget):
         self.connect_2_instruments.connect(self.experiment_worker.connect)
         self.disconnect_instruments.connect(self.experiment_worker.disconnect_instruments)
         self.initialise_instruments.connect(self.experiment_worker.initialise_instruments)
-        self.run_scan.connect(self.experiment_worker.getSpectra)
+        self.run_single.connect(self.experiment_worker.getSingleSpectra)
+        self.run_continous.connect(self.experiment_worker.startContinousSpectra)
+        self.stop_continous.connect(self.experiment_worker.stopContinousSpectra)
 
         self.run_adaptive_mapping.connect(self.experiment_worker.runAdaptiveMapping)
         self.stop_adaptive_mapping.connect(self.experiment_worker.stop_adaptive_mapping)
@@ -1151,6 +1151,7 @@ class ExperimentGUI(QWidget):
         self.continous_spectra_window = None
 
         self.adaptive_mapping_running = False
+
 
     def init_controls(self):
                
@@ -1315,7 +1316,7 @@ class ExperimentGUI(QWidget):
 
     def init_single_plotting_window(self):
         #print("Making New Window")
-        self.single_spectra_window = SpectrumWindow(self.logger,self.vars,self.run_scan)
+        self.single_spectra_window = SpectrumWindow(self.logger,self.vars,(self.run_single))
         self.single_spectra_window.show()
         self.experiment_worker.single_spectra_updated.connect(self.single_spectra_window.add_line)
         self.experiment_worker.single_spectra_updated.connect(self.updateSingleSpectraButtonTxt)
@@ -1344,12 +1345,17 @@ class ExperimentGUI(QWidget):
         self.single_spectra_button.setText("Single Spectra")
 
     def init_continous_plotting_window(self):
-        self.continous_spectra_window = SpectrumWindow(self.logger,self.vars,self.run_scan)
+        self.continous_spectra_window = SpectrumWindow(self.logger,self.vars,(self.run_continous,self.stop_continous))
         self.continous_spectra_window.cont_plot_first_plot = False
         self.experiment_worker.continous_spectra_updated.connect(self.continous_spectra_window.update_line)
-        self.continous_spectra_window.cont_scan_finished.connect(self.reset_continous_label)
-        self.continous_spectra_window.show()
+        #self.continous_spectra_window.cont_scan_finished.connect(self.reset_continous_label)
 
+        self.experiment_worker.continous_stopped_running.connect(self.reset_continous_label)
+        #self.experiment_worker.continous_is_running.connect(self.continous_spectra_window.continous_is_running_callback)
+
+        
+
+        self.continous_spectra_window.show()
 
     def continous_spectra(self):
         self.logger.debug("Continous Button Pressed")
@@ -1364,7 +1370,7 @@ class ExperimentGUI(QWidget):
             self.logger.debug("Stopping continuous spectra...")
             self.continous_spectra_button.setEnabled(False)
             self.logger.debug("Continous spectra button has been set to DISABLED")
-            self.continous_spectra_window.stop_continous()
+            self.stop_continous.emit()
         else:
             """Else start it again"""
             self.logger.debug("Starting continuous spectra...")
@@ -1380,9 +1386,9 @@ class ExperimentGUI(QWidget):
         """Once the Continous Timer has been stopped we can re-enable the continous button"""
         self.logger.debug("Reset_continous_label() CALLED")
         self.continous_spectra_button.setText("Continous Spectra")
-        self.continous_spectra_window.continous_is_running = False
         self.continous_spectra_button.setEnabled(True)
         self.logger.debug("Continous spectra button has been set to ENABLED")
+        self.continous_spectra_window.continous_is_running = False
     
     def adaptive_mapping(self):
 

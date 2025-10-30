@@ -9,7 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal, Slot, QObject, QTimer
 import time
 
-#from pylablib.devices import Andor
+from pylablib.devices import Andor
 
 
 class Madpiezo():
@@ -89,6 +89,8 @@ class ExperimentCTRL(QObject):
     instruments_connected = Signal()
     MCL_position_updated = Signal(tuple)
     single_spectra_updated = Signal(object)
+    continous_is_running = Signal()
+    continous_stopped_running = Signal()
     continous_spectra_updated = Signal(object)
     new_adaptive_spectra_added = Signal()
     adaptive_sampling_done = Signal()
@@ -155,12 +157,8 @@ class ExperimentCTRL(QObject):
         self.ExpCfg.wavelengths = self.spec.get_calibration()  # return array of wavelength corresponding to each pixel
 
         self.logger_info.emit("[LabCTRL] Initialised instruments")
-        
-    @Slot(bool)
-    def getSpectra(self,single=True):
 
-        #print("[ExperimentCTRL thread] Running scan", single)
-
+    def getSpectra(self):
         timeout = self.cam.get_exposure()*1.3
 
         #timeout should be at min 1s right?
@@ -172,14 +170,46 @@ class ExperimentCTRL(QObject):
         for i in range(0,int(self.ExpCfg._vars['Number of Samples'])):
             spectra[i,:] = self.cam.snap(timeout=timeout)[0]
             
-        spectrum = np.median(spectra,axis=0)
-        if single:
-            self.logger_info.emit("[LabCTRL] Single Spectra Updated")
-            self.single_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
-        else:
-            self.logger_info.emit("[LabCTRL] Continous Spectra Updated")
-            self.continous_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+        return np.median(spectra,axis=0)
+
+    """This is used for both single and continous spectra"""        
+    @Slot()
+    def getSingleSpectra(self):
+
+        spectrum = self.getSpectra()
+        
+        self.logger_info.emit("[LabCTRL] Single Spectra Updated")
+        self.single_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+        
+        #    #self.logger_info.emit("[LabCTRL] Continous Spectra Updated")
+        #    self.continous_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
     
+    def getContinousSpectra(self):
+        
+        spectrum = self.getSpectra()
+        
+        self.logger_info.emit("[LabCTRL] Continous Spectra Updated")
+        self.continous_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+
+
+    @Slot()
+    def startContinousSpectra(self):
+        self.logger_info.emit("[LabCTRL] Starting Continous Scan QTimer")
+        self.continous_timer = QTimer()
+        self.continous_timer.setInterval(250)
+        self.continous_timer.timeout.connect(self.getContinousSpectra)
+        self.continous_timer.start()
+        self.logger_info.emit("[LabCTRL] Emitting continous_is_running signal")
+        self.continous_is_running.emit()
+
+    @Slot()
+    def stopContinousSpectra(self):
+        self.logger_info.emit("[LabCTRL] stop_continous called, stopping continous timer")
+        self.continous_timer.stop()
+        # next, emit a signal to change the label of the button
+        self.logger_info.emit("[LabCTRL] Emitting continous_stopped_running signal")
+        self.continous_stopped_running.emit()
+
     @Slot()
     def runAdaptiveMapping(self):
 		
@@ -259,7 +289,7 @@ class ExperimentCTRL(QObject):
     @Slot()
     def stepAdaptive(self):
 
-        self.logger_info("[LabCTRL] Stepping Adaptive" + str(self.adaptive_pt_idx) )
+        self.logger_info.emit("[LabCTRL] Stepping Adaptive" + str(self.adaptive_pt_idx) )
 
         self.runner = adaptive.runner.simple(
                     self.learner,
@@ -271,74 +301,7 @@ class ExperimentCTRL(QObject):
         if loss < self.ExpCfg._vars['AS Loss Condition']:
             self.stop_adaptive_mapping()
 
-        self.logger_info("[LabVTRL] Loss: " + str(loss))
-
-
-    @Slot()
-    def runAdaptiveMapping(self):
-
-        def closest(lst, K):
-            item = lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
-            return np.where(lst == item)[0][0]
-		
-        def getSpectra(xy):
-            x,y = xy
-            
-            """z-axis focus interpolation"""
-            #zmax,xmax = self.ExpCfg.V['z_x_max']
-            #zmin,xmin = self.ExpCfg.V['z_x_min']
-
-            #zpos = np.interp(x,[xmin,xmax],[zmin,zmax])
-
-            """Move the stage to the correct position"""
-            #self.piezo.goz(zpos)
-            self.MCL_goxy((x,y))
-            sleep(self.ExpCfg._vars['Wait time (s)'])
-
-            """Take some spectra and calculate the median of them"""
-            spectra = np.zeros((int(self.ExpCfg._vars['Number of Samples']),len(self.ExpCfg.wavelengths)))
-            for i in range(0,int(self.ExpCfg._vars['Number of Samples'])):
-                spectra[i,:] = self.cam.snap(timeout=self.cam.get_exposure()*1.3)[0]
-                
-            spectrum = np.median(spectra,axis=0)
-
-            """Here we need to save the spectrum to a file as we go"""
-
-            # Append to CSV
-            xyz = np.array(self.MCL.get_position())
-            
-            with open(self.ExpCfg._vars['Working Directory'] + 'spectra.csv', mode='a',newline='') as file:
-                spamwriter = csv.writer(file, delimiter=',',
-                            quotechar='|', quoting=csv.QUOTE_MINIMAL)
-                spamwriter.writerow(np.append(xyz,spectrum))
-
-            
-            """Integrate the spectrum^2 and use this with the adaptive function"""
-            #min_idx = 600
-            #max_idx = -500
-            #energy = integrate.simpson(spectrum[min_idx:max_idx]) #-1049667.9166666665
-            #print(xy,energy)
-
-            idx = closest(self.ExpCfg.wavelengths,self.ExpCfg._vars['AS Wavelength (nm)'])
-
-            print(xy,spectrum[idx])
-
-            return spectrum[idx]
-        
-
-        """Setup the adaptive learner"""
-        
-        x1 = self.ExpCfg._vars['X Center (um)'] - self.ExpCfg._vars['dx (um)']/2
-        x2 = self.ExpCfg._vars['X Center (um)'] + self.ExpCfg._vars['dx (um)']/2
-        y1 = self.ExpCfg._vars['Y Center (um)'] - self.ExpCfg._vars['dy (um)']/2
-        y2 = self.ExpCfg._vars['Y Center (um)'] + self.ExpCfg._vars['dy (um)']/2
-        
-        self.learner = adaptive.Learner2D(
-                getSpectra, 
-                bounds=[(x1, x2), (y1, y2)]
-                )
-
-        self.ExpCfg.saveMetadata()
+        self.logger_info.emit("[LabCTRL] Loss: " + str(loss))
 
             
     @Slot()
@@ -348,19 +311,21 @@ class ExperimentCTRL(QObject):
     
     @Slot()
     def stop_adaptive_mapping(self):
-        self.logger_info("[LabCTRL Thread] Trying to stop")
+        self.logger_info.emit("[LabCTRL] Trying to stop")
         self.runner_timer.stop()
         self.adaptive_sampling_done.emit()
     
     @Slot(tuple)
     def MCL_goxy(self,pos):
         self.MCL.goxy(pos)
+        self.logger_info.emit("[LabCTRL] MCL Moving To (x,y): " + str(pos))
         sleep(self.ExpCfg._vars['Wait time (s)'])
         self.MCL_get_position()
     
     @Slot(float)
     def MCL_goz(self,pos):
         self.MCL.goz(pos)
+        self.logger_info.emit("[LabCTRL] MCL Moving To (z): " + str(pos))
         sleep(self.ExpCfg._vars['Wait time (s)'])
         self.MCL_get_position()
     
