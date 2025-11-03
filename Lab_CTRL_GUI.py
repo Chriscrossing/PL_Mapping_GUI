@@ -85,9 +85,17 @@ class LoggingWidget(QWidget):
         formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
         self.handler.setFormatter(formatter)
 
+        # Setup logging file handler
+        self.file_handler = logging.FileHandler("Lab_CTRL_GUI.log")
+        self.file_handler.setLevel(log_level) 
+        self.file_handler.setFormatter(formatter)
+
         # Register handler globally
         logging.getLogger().addHandler(self.handler)
+        logging.getLogger().addHandler(self.file_handler)
         logging.getLogger().setLevel(log_level)
+
+
 
         # Change window size
         self.resize(1000,200)
