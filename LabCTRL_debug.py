@@ -38,6 +38,7 @@ class ExperimentCTRL(QObject):
     continous_spectra_updated = Signal(object)
     new_adaptive_spectra_added = Signal()
     adaptive_sampling_done = Signal()
+    regular_mapping_done = Signal()
     CCD_temp_updated = Signal(float)
 
 
@@ -83,16 +84,50 @@ class ExperimentCTRL(QObject):
             print(k,v) 
 
     """Used for single and continous spectra"""        
-    @Slot(bool)
     def getSpectra(self,single=True):
 
         spectrum = np.random.rand(5)
         time.sleep(0.2)
-        if single:
-            self.single_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
-        else:
-            self.continous_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+        return spectrum
+    
 
+    """This is used for both single and continous spectra"""        
+    @Slot()
+    def getSingleSpectra(self):
+
+        spectrum = self.getSpectra()
+        
+        self.logger_info.emit("[LabCTRL] Single Spectra Updated")
+        self.single_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+        
+        #    #self.logger_info.emit("[LabCTRL] Continous Spectra Updated")
+        #    self.continous_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+    
+    def getContinousSpectra(self):
+        
+        spectrum = self.getSpectra()
+        
+        self.logger_info.emit("[LabCTRL] Continous Spectra Updated")
+        self.continous_spectra_updated.emit((self.ExpCfg.wavelengths, spectrum))
+
+
+    @Slot()
+    def startContinousSpectra(self):
+        self.logger_info.emit("[LabCTRL] Starting Continous Scan QTimer")
+        self.continous_timer = QTimer()
+        self.continous_timer.setInterval(250)
+        self.continous_timer.timeout.connect(self.getContinousSpectra)
+        self.continous_timer.start()
+        self.logger_info.emit("[LabCTRL] Emitting continous_is_running signal")
+        self.continous_is_running.emit()
+
+    @Slot()
+    def stopContinousSpectra(self):
+        self.logger_info.emit("[LabCTRL] stop_continous called, stopping continous timer")
+        self.continous_timer.stop()
+        # next, emit a signal to change the label of the button
+        self.logger_info.emit("[LabCTRL] Emitting continous_stopped_running signal")
+        self.continous_stopped_running.emit()
 
     @Slot()
     def runAdaptiveMapping(self):
@@ -138,8 +173,8 @@ class ExperimentCTRL(QObject):
             """Here we need to save the spectrum to a file as we go"""
 
             # Append to CSV
-            xyz = np.array(self.MCL.get_position())
-            
+            #xyz = np.array(self.MCL.get_position())
+            xyz = np.array([x,y,1])
             with open(self.ExpCfg._vars['Working Directory'] + 'spectra.csv', mode='a',newline='') as file:
                 spamwriter = csv.writer(file, delimiter=',',
                             quotechar='|', quoting=csv.QUOTE_MINIMAL)
@@ -147,8 +182,6 @@ class ExperimentCTRL(QObject):
             logging_string = "X: " +str(np.round(x,3)) + " Y: " +str(np.round(y,3))  +   " Intensity: " + str(intensity)
             self.logger_info.emit(logging_string)
             
-            time.sleep(1)
-
             return intensity
         
 
@@ -169,17 +202,76 @@ class ExperimentCTRL(QObject):
 
         
         #self.runner.live_info()
-    
-    @Slot()
-    def get_CCD_temperature(self):
-        temp = np.random.rand()
-        self.CCD_temp_updated.emit(temp)
-    
+
     @Slot()
     def stop_adaptive_mapping(self):
         print("[LabCTRL Thread] Trying to stop")
         self.runner_timer.stop()
         self.adaptive_sampling_done.emit()
+
+
+    @Slot(object)
+    def runRegularMapping(self,coordinates):
+
+        self.ExpCfg.saveMetadata()
+
+        self.Xpts = coordinates[0]
+        self.Ypts = coordinates[1]
+
+        self.regular_npts = len(self.Xpts.flatten())
+        
+        self.regular_pt_idx = 0
+
+
+        self.regular_mapping_timer = QTimer()
+        self.regular_mapping_timer.setInterval(250)
+        self.regular_mapping_timer.timeout.connect(self.stepRegularMapping)
+        self.regular_mapping_timer.start()
+
+    def stepRegularMapping(self):
+        def getSpectra(xy):
+            x,y = xy
+
+            x, y = xy
+            a = 0.2
+            intensity = x + np.exp(-((x**2 + y**2 - 0.75**2) ** 2) / a**4)
+
+
+            spectrum = np.ones(5) * intensity
+
+            """Here we need to save the spectrum to a file as we go"""
+
+            # Append to CSV
+            #xyz = np.array(self.MCL.get_position())
+            xyz = np.array([x,y,1])
+
+            with open(self.ExpCfg._vars['Working Directory'] + 'spectra.csv', mode='a',newline='') as file:
+                spamwriter = csv.writer(file, delimiter=',',
+                            quotechar='|', quoting=csv.QUOTE_MINIMAL)
+                spamwriter.writerow(np.append(xyz,spectrum))
+            
+            
+            
+            logging_string =  str(self.regular_pt_idx) + "/" + str(self.regular_npts) + ", X: " +str(np.round(x,3)) + " Y: " +str(np.round(y,3))  +   " Intensity: " + str(intensity)
+            self.logger_info.emit(logging_string)
+            
+        
+        if self.regular_pt_idx <= self.regular_npts:
+            getSpectra((self.Xpts.flatten()[self.regular_pt_idx],self.Ypts.flatten()[self.regular_pt_idx]))
+            self.regular_pt_idx +=1
+        else:
+            self.stopRegularMapping()
+        
+    @Slot()
+    def stopRegularMapping(self):
+        print("[LabCTRL Thread] Trying to stop")
+        self.regular_mapping_timer.stop()
+        self.regular_mapping_done.emit()
+
+    @Slot()
+    def get_CCD_temperature(self):
+        temp = np.random.rand()
+        self.CCD_temp_updated.emit(temp)
     
     @Slot(tuple)
     def MCL_goxy(self,pos):

@@ -15,7 +15,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt
 import pyqtgraph as pg
 
-from LabCTRL import ExperimentCTRL
+from LabCTRL_debug import ExperimentCTRL
 from pathlib import Path
 
 import logging
@@ -152,7 +152,8 @@ class Variables:
             "dy (um)": 100,
             "Wait time (s)": 0.1,
             "AS Loss Condition": 0.001,
-            "AS Wavelength (nm)": 615
+            "AS Wavelength (nm)": 615,
+            "RS Step Size (nm)": 10
 
         }
 
@@ -645,6 +646,8 @@ class DataAnalysisGUI(QMainWindow):
         self.loading = False
         self.run_csv_image_loader()
 
+        self.Experimental_window = None
+
     def init_controls(self):
         self.open_button = QPushButton("Open Experiment")
         self.open_button.setToolTip("Select a experiment folder to open")
@@ -676,8 +679,12 @@ class DataAnalysisGUI(QMainWindow):
 
     def open_experiment_control(self):
         """Callback to open the experiment control window"""
-        self.Experimental_window = ExperimentGUI(self.logger,self.vars)
-        self.Experimental_window.show()
+        if not self.Experimental_window or not self.Experimental_window.isVisible():
+            self.logger.info("Opening Experiment Control Window")            
+            self.Experimental_window = ExperimentGUI(self.logger,self.vars)
+            self.Experimental_window.show()
+        else:
+            self.logger.info("Experiment Window is already open")  
         
     def run_csv_image_loader(self):
         
@@ -1098,6 +1105,8 @@ class ExperimentGUI(QWidget):
     stop_continous = Signal()
     run_adaptive_mapping = Signal()
     stop_adaptive_mapping = Signal()
+    run_regular_mapping = Signal(object)
+    stop_regular_mapping = Signal()
     ask_for_ccd_temperature = Signal()
 
     MCL_go_xy = Signal(tuple)
@@ -1135,6 +1144,8 @@ class ExperimentGUI(QWidget):
         self.experiment_worker.finished.connect(self.experiment_thread.quit)
         self.experiment_worker.CCD_temp_updated.connect(self.temperature_recieved)
         self.experiment_worker.adaptive_sampling_done.connect(self.adaptive_sampling_finished)
+        self.experiment_worker.regular_mapping_done.connect(self.regular_mapping_finished)
+
 
         self.experiment_worker.logger_info.connect(self.logger.info)
         self.experiment_worker.logger_err.connect(self.logger.error)
@@ -1149,6 +1160,10 @@ class ExperimentGUI(QWidget):
 
         self.run_adaptive_mapping.connect(self.experiment_worker.runAdaptiveMapping)
         self.stop_adaptive_mapping.connect(self.experiment_worker.stop_adaptive_mapping)
+
+        self.run_regular_mapping.connect(self.experiment_worker.runRegularMapping)
+        self.stop_regular_mapping.connect(self.experiment_worker.stopRegularMapping)
+
         self.ask_for_ccd_temperature.connect(self.experiment_worker.get_CCD_temperature)
 
 
@@ -1159,6 +1174,7 @@ class ExperimentGUI(QWidget):
         self.continous_spectra_window = None
 
         self.adaptive_mapping_running = False
+        self.regular_mapping_running = False
 
 
     def init_controls(self):
@@ -1201,7 +1217,8 @@ class ExperimentGUI(QWidget):
             "dy (um)",
             "Wait time (s)",
             "AS Loss Condition",
-            "AS Wavelength (nm)"
+            "AS Wavelength (nm)",
+            "RS Step Size (nm)"
         ]
         
         variable_tooltips = [
@@ -1216,7 +1233,8 @@ class ExperimentGUI(QWidget):
             "Size of the mapping area in the Y direction",
             "Time to wait between moving the MCL stage and taking a spectra",
             "Adaptive Sampling Loss Condition (related to the minimum feature size)",
-            "The wavelength that the Adaptive Sampling Alogrithm uses to measure intensity"
+            "The wavelength that is used for the AS algorythm and shown in the map",
+            "The stepping size when using regular sampling (in nanometers)"
             
         ]
 
@@ -1255,8 +1273,9 @@ class ExperimentGUI(QWidget):
         self.left_panel.addWidget(self.run_adaptive_mapping_button)
         
         
-        self.Experiment_Status_Label = QLabel("Status:")
-        self.left_panel.addWidget(self.Experiment_Status_Label)
+        self.run_regular_mapping_button = QPushButton("Run Regular Mapping")
+        self.run_regular_mapping_button.setToolTip("Start Regular Mapping")
+        self.left_panel.addWidget(self.run_regular_mapping_button)
         
         row = QHBoxLayout()
         label = QLabel("Current CCD Temp:")
@@ -1276,6 +1295,7 @@ class ExperimentGUI(QWidget):
         self.continous_spectra_button.clicked.connect(self.continous_spectra)
 
         self.run_adaptive_mapping_button.clicked.connect(self.adaptive_mapping)
+        self.run_regular_mapping_button.clicked.connect(self.regular_mapping)
         
     def connect_disconnect_instruments(self):
         if self.instruments_connected == False:
@@ -1322,6 +1342,10 @@ class ExperimentGUI(QWidget):
             self.vars.set_variable(name, float(field.text()))
         self.initialise_instruments.emit(self.vars)
 
+    """
+    Methods for single spectra window
+    """
+
     def init_single_plotting_window(self):
         #print("Making New Window")
         self.single_spectra_window = SpectrumWindow(self.logger,self.vars,(self.run_single))
@@ -1351,6 +1375,10 @@ class ExperimentGUI(QWidget):
     def updateSingleSpectraButtonTxt(self,data):
         """When scan is complete, run this"""
         self.single_spectra_button.setText("Single Spectra")
+
+    """
+    Methods for Continous Spectra Window
+    """
 
     def init_continous_plotting_window(self):
         self.continous_spectra_window = SpectrumWindow(self.logger,self.vars,(self.run_continous,self.stop_continous))
@@ -1398,6 +1426,10 @@ class ExperimentGUI(QWidget):
         self.logger.debug("Continous spectra button has been set to ENABLED")
         self.continous_spectra_window.continous_is_running = False
     
+    """
+    Methods for adaptive mapping
+    """
+
     def adaptive_mapping(self):
 
         """Check if adaptive mapping is running first"""
@@ -1410,8 +1442,9 @@ class ExperimentGUI(QWidget):
 
         else:
             self.logger.info("[GUI Thread] Trying to stop adaptive thread")
-            self.stop_adaptive_mapping.emit()
             self.run_adaptive_mapping_button.setEnabled(False)
+            self.stop_adaptive_mapping.emit()
+            
 
     def on_adaptive_mapping_folder_selected(self):
         
@@ -1445,6 +1478,89 @@ class ExperimentGUI(QWidget):
         self.run_adaptive_mapping_button.setText("Run Adaptive Mapping")
         self.adaptive_mapping_running = False
         self.run_adaptive_mapping_button.setEnabled(True)
+
+    """
+    Methods for regular mapping
+    """
+
+    def regular_mapping(self):
+
+        """Check if adaptive mapping is running first"""
+        if self.regular_mapping_running == False:
+            # If it's not running, then lets ask the user to choose an experiment folder
+            dialog = FileBrowserDialog(self.vars,expPath=True)
+            # Then once a folder is selected, start the mapping (if no folder is selected then nothing happens)
+            dialog.fileSelected.connect(self.on_regular_mapping_folder_selected)
+            dialog.exec()
+
+        else:
+            self.logger.info("[GUI Thread] Trying to stop regular mapping thread")
+            self.run_regular_mapping_button.setEnabled(False)
+            self.stop_regular_mapping.emit()
+            
+
+    def on_regular_mapping_folder_selected(self):
+        
+        file2check = self.vars.get_variable("Working Directory") + "spectra.csv"
+        
+        # Check if a spectra.csv file exists in this directory
+        if os.path.isfile(file2check):
+            # if it does, give the user a choice on whether or not to overwrite it!
+            if OverwriteWarningDialog.confirm_overwrite(file2check):
+                self.logger.info("The user chose to overwrite file")
+                #user chose to overwrite the file so we will delete it
+                os.remove(file2check) 
+                self.start_regular_mapping()
+            else:
+                self.logger.info("The user chose not to ovewrite, re-opening file browser")
+                self.regular_mapping()
+        else:
+            self.start_regular_mapping()
+    
+
+    def intialise_regular_map(self):
+        x1 = self.vars._vars['X Center (um)'] - self.vars._vars['dx (um)']/2
+        x2 = self.vars._vars['X Center (um)'] + self.vars._vars['dx (um)']/2
+        y1 = self.vars._vars['Y Center (um)'] - self.vars._vars['dy (um)']/2
+        y2 = self.vars._vars['Y Center (um)'] + self.vars._vars['dy (um)']/2
+        step = self.vars._vars["RS Step Size (nm)"] / 1e3 # convert to um
+
+        # Generate list of coordinates in x and y
+        xpts = np.arange(x1,x2 + step, step)
+        ypts = np.arange(y1,y2 + step, step)
+
+        # Create a grid of coordinates
+        Xpts,Ypts = np.meshgrid(xpts,ypts)
+
+        self.regular_map_size = np.shape(Xpts)
+        self.vars.set_variable("regular_map_size",self.regular_map_size)
+        
+        np.savetxt(self.vars._vars['Working Directory'] + "xpts.csv",xpts,delimiter=',')
+        np.savetxt(self.vars._vars['Working Directory'] + "ypts.csv",ypts,delimiter=',')
+
+        return Xpts,Ypts
+
+
+    
+    def start_regular_mapping(self):
+        
+        self.run_regular_mapping_button.setText("Running ... (stop)")
+        
+        # Next the instruments should be initalised with the parameters in the gui (removing the need to click set variables)
+        self.set_variables()
+
+        # Now intialise the coordinates of the mapping we'll do
+        Xpts,Ypts = self.intialise_regular_map()
+
+        # Then we can set away the adaptive mapping
+        self.regular_mapping_running = True
+        self.run_regular_mapping.emit((Xpts,Ypts))
+        
+    def regular_mapping_finished(self):
+        self.run_regular_mapping_button.setText("Run Regular Mapping")
+        self.regular_mapping_running = False
+        self.run_regular_mapping_button.setEnabled(True)
+
 
     def closeEvent(self, event):
         self.logger.info("[GUI Thread] Experimental Window Closed")
